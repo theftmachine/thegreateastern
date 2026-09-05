@@ -489,6 +489,29 @@ button.chip:focus-visible{outline:3px solid var(--dust);outline-offset:3px}
   .w,.newbest{animation-duration:3s}
 }
 
+/* ---- settings tabs -------------------------------------------------------
+   Sheared plates like every other pressable thing, but sitting in a row with a
+   sodium rule under the selected one - so the selected tab reads as part of
+   the panel below it rather than as a button that happens to be lit. */
+.tabs{display:flex;gap:6px;width:min(520px,92vw);margin:0 auto 10px;
+  align-items:stretch}
+.tabs .tab{flex:1 1 0;position:relative;background:var(--ink-3);
+  border:1px solid #2c333f;color:var(--dust-dim);
+  font-family:var(--font-ui);font-size:12px;font-weight:700;
+  letter-spacing:.16em;text-transform:uppercase;
+  padding:11px 4px 10px;cursor:pointer;
+  transform:skewX(var(--lean));transition:color .12s,background .12s}
+.tabs .tab span{display:block;transform:skewX(calc(-1 * var(--lean)))}
+.tabs .tab:hover{color:var(--dust)}
+.tabs .tab.sel{background:var(--sodium);color:var(--ink);
+  border-color:var(--sodium)}
+.tabs .tab.sel::after{content:"";position:absolute;left:0;right:0;bottom:-6px;
+  height:3px;background:var(--sodium)}
+@media (max-height:620px){
+  .tabs .tab{padding:8px 3px 7px;font-size:11px;letter-spacing:.12em}
+  .tabs{margin-bottom:8px}
+}
+
 </style>
 <body>
 <canvas id="gl"></canvas>
@@ -537,6 +560,15 @@ button.chip:focus-visible{outline:3px solid var(--dust);outline-offset:3px}
 <!-- ---------------------------------------------------------- settings --- -->
 <div id="settings" class="screen thin hidden">
   <h2 class="head">Settings</h2>
+  <!-- Four tabs rather than one long scroll. The panel had grown to twenty
+       options in a single column, which meant the thing you wanted was always
+       somewhere below the fold and you had to read the lot to find it. -->
+  <div class="tabs" id="settingsTabs">
+    <button class="tab sel" type="button" data-tab="general"><span>General</span></button>
+    <button class="tab" type="button" data-tab="sound"><span>Sound</span></button>
+    <button class="tab" type="button" data-tab="visuals"><span>Visuals</span></button>
+    <button class="tab" type="button" data-tab="extra"><span>Extra</span></button>
+  </div>
   <div class="panel" id="settingsBody"></div>
   <div class="menu">
     <button class="plate btn ghost" id="btnSettingsBack"><span>Back</span></button>
@@ -662,7 +694,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  var VERSION = '3.8.2';
+  var VERSION = '3.16.0';
 
   /* --------------------------------------------------------------- constants */
   var C = {
@@ -833,6 +865,20 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 
     POLICE_SLOT: 10500.0,      // metres between traps, roughly
     POLICE_TOP: 33.3,          // m/s, 120 km/h
+    /* The rule that decides every pursuit: above their own top speed they sit
+       five km/h behind you and no closer, and below it they can do whatever
+       they like.
+
+       So while you are over 120 they are always there and always losing - a
+       hundred metres a minute, which is slow enough to keep the mirror full
+       and fast enough that you are getting away. The moment you drop under
+       120 for a corner, a town, a road train, they have you.
+
+       The alternative was a timer, and a timer is the wrong tool: it makes the
+       chase about how long you have been running rather than about how you are
+       driving, and it cannot be reasoned about from the driver's seat. This
+       can. The speedo tells you whether you are safe. */
+    POLICE_TRAIL: 1.39,        // m/s they stay behind you by, which is 5 km/h
     POLICE_ACCEL: 6.2,
     POLICE_OVER: 2.5,          // m/s over the limit before they care
     /* You pull away at about 31 km/h, so 700 m took eighty seconds of holding
@@ -845,7 +891,9 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
        stop, and without this they would sit behind you for the rest of the
        run. They take the plate instead and drop off - you are not caught, but
        you did not get away with it either. */
-    POLICE_PATIENCE: 75.0,
+    /* Longer than HOLD + FADE, or the chase is called off before the cap has
+       had a chance to tell and the fade never happens. */
+    POLICE_PATIENCE: 110.0,
     POLICE_CATCH_GAP: 22.0,
     /* The catch-up. They come off the verge from a standstill with a couple
        of seconds of speed they are not otherwise allowed, which is what turns
@@ -871,6 +919,14 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     POLICE_PULLOVER_GAP: 7.5,  // metres they hold behind your bumper
     POLICE_LOOK: 70.0,         // how far up the road they read the traffic
     POLICE_CLIP_SLOW: 0.55,    // the beat they lose for shouldering a car aside
+    /* They will go round on the gravel as well as on the wrong side, which is
+       what a real one does and what stops a queue of traffic being a wall you
+       can hide behind. The delay is the point: half a second of deciding is
+       long enough for you to have put something oncoming in the gap, so the
+       trick still works - it just has to be timed rather than assumed. */
+    POLICE_VERGE_X: 4.15,      // how far onto the gravel they will go
+    POLICE_DECIDE: 0.55,       // seconds of hesitation before they commit
+    POLICE_VERGE_SLOW: 0.88,   // and what the loose surface costs them
 
     /* ---- the aurora -------------------------------------------------------
        Rolled per kilometre rather than per second, so that flooring it does
@@ -962,6 +1018,10 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     WIDE_SPEED_MAX: 19.0,
     WIDE_PILOT_LEAD: 210.0,    // metres the pilot runs ahead of the load
     WIDE_WARN_AT: 260.0,       // when the sign is close enough to read
+    // metres of road with nothing going past before an overtaking run counts
+    // as finished and gets reported
+    OVERTAKE_SETTLE: 170.0,
+
     WIDE_YIELD_AT: 340.0,      // how far ahead of the load a car gets out of it
     /* A rig needs longer. It moves sideways at two thirds the rate and has
        four times the length to swing, so given the same warning as a car it
@@ -1222,6 +1282,59 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
   function treeCover(s) {
     var d = 0.60 * vnoise(s / 430.0, 211) + 0.40 * vnoise(s / 128.0, 223);
     return clamp((d - 0.24) / 0.58, 0, 1);
+  }
+
+  /* ---- avenues -------------------------------------------------------------
+     Stretches where the trees close over the road. They are real and they are
+     old - planted along these roads a century ago, salmon gums and wandoo that
+     have grown out over the tarmac until the road runs through a tunnel of
+     them - and at night they are the most unnerving thing out there. Your
+     lights stop reaching into a paddock and start raking along trunks two
+     metres from the car.
+
+     A separate zone from the ordinary tree belts rather than a thicker
+     version of them: an avenue has a beginning and an end, and cover that
+     fades in and out over a couple of hundred metres is a wood, not a tunnel. */
+  var AVENUE_SLOT = 4200.0;     // one every four kilometres or so
+  var AVENUE_LEN_MIN = 180.0;
+  var AVENUE_LEN_MAX = 520.0;
+  var AVENUE_EDGE = 34.0;       // metres the canopy takes to close over you
+
+  // 0 outside, 1 in the thick of one
+  function avenueAt(s) {
+    if (s < 0) return 0;
+    var cell = Math.floor(s / AVENUE_SLOT);
+    if (hash1(cell, 617) > 0.55) return 0;         // not every cell has one
+    var start = cell * AVENUE_SLOT + hash1(cell, 619) * (AVENUE_SLOT - AVENUE_LEN_MAX - 200);
+    var len = AVENUE_LEN_MIN + hash1(cell, 623) * (AVENUE_LEN_MAX - AVENUE_LEN_MIN);
+    var into = s - start;
+    if (into < 0 || into > len) return 0;
+    var a = clamp(into / AVENUE_EDGE, 0, 1);
+    var b = clamp((len - into) / AVENUE_EDGE, 0, 1);
+    return Math.min(a, b);
+  }
+
+  /* ---- canola --------------------------------------------------------------
+     In the back half of winter the wheatbelt turns yellow in patches - one
+     paddock in flower against stubble on either side of it, for kilometres.
+     At night you do not see the colour so much as the paddock going pale: a
+     canola crop throws back far more of your headlights than bare dirt does,
+     so a field of it reads as a faintly luminous sheet either side of the
+     road while everything around it stays black. */
+  var CANOLA_SLOT = 2600.0;
+
+  // 0 stubble, 1 in flower. Sides are independent: one paddock in and one out
+  // is what it actually looks like.
+  function canolaAt(s, side) {
+    if (s < 0) return 0;
+    var salt = side < 0 ? 701 : 709;
+    var cell = Math.floor(s / CANOLA_SLOT);
+    if (hash1(cell, salt) > 0.40) return 0;
+    var start = cell * CANOLA_SLOT + hash1(cell, salt + 1) * (CANOLA_SLOT * 0.45);
+    var len = 420 + hash1(cell, salt + 2) * 1500;
+    var into = s - start;
+    if (into < 0 || into > len) return 0;
+    return Math.min(clamp(into / 60, 0, 1), clamp((len - into) / 60, 0, 1));
   }
 
   // Side roads. Purely scenery - the player can never turn off - but a highway
@@ -1501,6 +1614,15 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
   function resetIds() { _uid = 0; }
 
   /* --------------------------------------------------------------- messages */
+  /* The road used to talk to you. Every few kilometres it would offer a line -
+     that you had passed this fence before, that the lamps all looked the same,
+     that something was keeping pace - and the trouble with them is that they
+     are the game telling you what to feel about a road you are perfectly
+     capable of feeling something about yourself. An empty highway at 3am does
+     not need a narrator.
+
+     The lines are kept because the milestone tag still needs somewhere to
+     read a name from if it is ever wanted again; nothing pushes them now. */
   var MILESTONE_LINES = [
     'the lamps all look the same',
     'no turnoffs. not one.',
@@ -1579,6 +1701,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     this.eventQuietSince = -1e9;
     this.eventAt = {};
     this.lastCopStop = -1e9;
+    this.overtakeTold = true;
     /* Cloud, rain and lightning are three separate amounts rather than one
        dial, because they do not arrive or leave together: it clouds over
        before it rains, and it is still overcast long after it has stopped. */
@@ -2200,11 +2323,19 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       /* For the first couple of seconds they are allowed to out-run you,
          which is the only way a car that tops out at 120 ever arrives behind
          a car doing 169. After that the cap is the cap. */
+      /* Above their top speed they trail you by five km/h; below it they are
+         free to run at their own maximum and close on you properly. */
+      var outrunning = this.speed > C.POLICE_TOP;
+      var ceiling = outrunning
+        ? this.speed - C.POLICE_TRAIL
+        : Math.max(this.speed + 6, 22);
       var want = surging
         ? this.speed + C.POLICE_SURGE_OVER
-        : Math.min(C.POLICE_TOP, Math.max(this.speed + 6, 22));
+        : Math.min(Math.max(C.POLICE_TOP, ceiling), ceiling);
       // a car they have just shouldered out of the way costs them a beat
       if (e.clipSlow > 0) want = Math.min(want, this.speed * 0.55);
+      // and going round on the gravel is slower than going round on the road
+      if (e.viaVerge) want *= C.POLICE_VERGE_SLOW;
       // and one they have not got past yet costs them more than that
       if (e.blocked) want = Math.min(want, e.blocked.speed);
 
@@ -2218,7 +2349,12 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
          back of you doing a great deal more than 120 and it would be over
          before the mirror had told you anything - so the run is only ever
          lost to a car that has settled onto your bumper and stayed there. */
-      if (!surging && closing < C.POLICE_RAM_GAP &&
+      /* And they cannot take you while you are outrunning them. Trailing by
+         five km/h they should never get close enough anyway, but a surge that
+         ends right on your bumper could otherwise land one - and being booked
+         at a hundred and sixty by a car that tops out at a hundred and twenty
+         is the thing that makes a pursuit feel rigged. */
+      if (!surging && !outrunning && closing < C.POLICE_RAM_GAP &&
           Math.abs(this.x - e.x) < e.hw + C.PLAYER_HALF_W) {
         this.shake = Math.max(this.shake, 1.2);
         this.stats.booked = (this.stats.booked || 0) + 1;
@@ -2329,6 +2465,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
      against it. Set up an overtake in front of a police car and it is stuck
      with the same choice you were. */
   Simulation.prototype._policeLane = function (e, gap) {
+    // the hesitation is measured in seconds, so it needs the frame length
     var own = this.ownLaneCentre();
     var other = this.oncomingLaneCentre();
     e.blocked = null;
@@ -2347,12 +2484,33 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       var closeRate = e.speed + (onc ? onc.speed : 0);
       var need = (closing + slow.hl * 2 + 26) / Math.max(6, e.speed - slow.speed);
       var have = onc ? (onc.s - e.s) / Math.max(6, closeRate) : 99;
-      if (have < need + 1.4) { e.blocked = slow; return own; }
-      e.overtaking = true;
+
+      if (have < need + 1.4) {
+        /* The oncoming lane is not clear - so they look at the gravel, which
+           is what actually happens and what stops a line of traffic being a
+           wall you can sit behind. It costs them speed and it takes them a
+           moment to commit, and that moment is the whole game: half a second
+           is long enough for you to have put something in the gap. */
+        e.decide = (e.decide || 0) + this._dt;
+        if (e.decide < C.POLICE_DECIDE) { e.blocked = slow; return own; }
+        e.viaVerge = true;
+        e.overtaking = true;
+      } else {
+        e.viaVerge = false;
+        e.decide = 0;
+        e.overtaking = true;
+      }
     }
 
     // back in once past
-    if (e.s > slow.s + slow.hl + e.hl + 8) { e.overtaking = false; return own; }
+    if (e.s > slow.s + slow.hl + e.hl + 8) {
+      e.overtaking = false;
+      e.viaVerge = false;
+      e.decide = 0;
+      return own;
+    }
+    // the gravel is on your side of the road, past the shoulder
+    if (e.viaVerge) return (own >= 0 ? 1 : -1) * C.POLICE_VERGE_X;
     return other;
   };
 
@@ -2711,6 +2869,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       speed: 0, dzdt: 0, model: 0,
       state: 'parked', flash: 0, clear: 0, hail: 0,
       surge: null, clipSlow: 0, overtaking: false, blocked: null,
+      viaVerge: false, decide: 0,
       pace: 1
     });
   };
@@ -2877,7 +3036,6 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
         this.emit('backseat', null);
         break;
       case 'repeat':
-        this.pushMessage(MILESTONE_LINES[Math.floor(r() * MILESTONE_LINES.length)], 5.0);
         break;
       case 'static':
         this.radioBurst = 3.2 + r() * 2.5;
@@ -3183,6 +3341,17 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     thunderstorm: ['raining', 'raining', 'thunderstorm', 'cloudy']
   };
 
+  /* Called every frame: the manoeuvre is finished when nothing else has gone
+     by for a while, and that is when it is worth mentioning. */
+  Simulation.prototype._settleOvertakes = function () {
+    if (this.overtakeTold) return;
+    if (this.overtakeStreak < 2) return;
+    if (this.dist - this.lastOvertakeAt < C.OVERTAKE_SETTLE) return;
+    this.overtakeTold = true;
+    this.pushMessage('passed ' + this.overtakeStreak, 2.2);
+    this.emit('overtake', { streak: this.overtakeStreak });
+  };
+
   Simulation.prototype._updateWeather = function (dt) {
     var w = this.weather;
 
@@ -3402,6 +3571,9 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 
   /* ----------------------------------------------------------------- update */
   Simulation.prototype.update = function (dt, input) {
+    // stashed so the deeper helpers can measure time without threading dt
+    // through every call that leads to them
+    this._dt = dt;
     dt = clamp(dt, 0, 0.05);
     input = input || {};
     if (this.over) {
@@ -3578,6 +3750,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
        minutes rather than seconds and everything else is supposed to be able
        to happen underneath it. */
     this._updateWeather(dt);
+    this._settleOvertakes();
     this._updateSetPieces(dt, moved);
     this._updateAurora(dt);
     this._updateFireball(dt);
@@ -3724,7 +3897,6 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       // could not already see - and it took the place of a line that did.
       // It goes to the corner with the other readouts instead.
       if (this.milestoneIndex < MILESTONE_LINES.length && (this.milestoneIndex % 2 === 1)) {
-        this.pushMessage(MILESTONE_LINES[this.milestoneIndex], 5.0);
       }
       this.milestoneIndex++;
       this.nextMilestone += 1000;
@@ -3765,13 +3937,15 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
             e.passed = true;
             this.stats.overtakes++;
             // passes that run together are one manoeuvre, and worth saying so
+            /* Passing four cars is one manoeuvre, not four events. It used to
+               announce each one as it went by - passed 2, passed 3, passed 4 -
+               which is a running commentary on something you are in the middle
+               of doing and can see perfectly well. The count is banked and
+               reported once, when you have finished and pulled back in. */
             if (pd - this.lastOvertakeAt < 150) this.overtakeStreak++;
             else this.overtakeStreak = 1;
             this.lastOvertakeAt = pd;
-            if (this.overtakeStreak > 1) {
-              this.pushMessage('passed ' + this.overtakeStreak, 1.8);
-              this.emit('overtake', { streak: this.overtakeStreak });
-            }
+            this.overtakeTold = false;
           }
           break;
         case 'oncoming':
@@ -4051,6 +4225,11 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
         var cover = treeCover(s);
         // towns are cleared: a few survivors on the verge, no belt
         if (this.isLit(s)) cover *= 0.10;
+        /* An avenue overrides the belt rather than adding to it: inside one
+           the cover is total whatever the noise says, and it does not care
+           whether the noise happened to put a wood there. */
+        var av = this.isLit(s) ? 0 : avenueAt(s);
+        if (av > 0) cover = Math.max(cover, av);
         if (hash1(i, salt + 1) > cover * 0.88) continue;
 
         // bushes hug the verge, trees stand back off it
@@ -4063,6 +4242,15 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
         var off = bush
           ? TREE_NEAR - 1.2 + hash1(i, salt + 3) * 6.0
           : TREE_NEAR + hash1(i, salt + 3) * TREE_BAND;
+        /* In an avenue they stand right on the verge and they are big. This
+           is the whole effect: the trunks come close enough that your lights
+           rake along them instead of reaching past into a paddock. */
+        /* Close, but past the verge you can actually drive on. Pulled right
+           in to VERGE_MAX they were arriving in the windscreen as a wall -
+           correct for a canopy and useless for a road you have to see down. */
+        if (av > 0) {
+          off = lerp(off, C.VERGE_MAX + 1.4 + hash1(i, salt + 3) * 4.0, av);
+        }
 
         var t = p.take();
         t.s = s;
@@ -4072,6 +4260,12 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
         t.scale = 0.70 + hash1(i, salt + 5) * 0.65;
         t.rot = hash1(i, salt + 6) * 6.2832;
         t.lean = (hash1(i, salt + 7) - 0.5) * 0.10;
+        if (av > 0) {
+          // taller, and leaning out over the road the way an old one does
+          t.scale *= 1 + av * 0.30;
+          t.lean = lerp(t.lean, -t.side * (0.10 + hash1(i, salt + 8) * 0.13), av);
+        }
+        t.avenue = av;
       }
     }
     return p.list;
@@ -4545,6 +4739,8 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     TOWN_AHEAD: TOWN_AHEAD,
     TOWN_BEHIND: TOWN_BEHIND,
     TOWN_BLOCK: TOWN_BLOCK,
+    avenueAt: avenueAt,
+    canolaAt: canolaAt,
     formatDistance: formatDistance,
     formatSpeed: formatSpeed,
     formatTime: formatTime
@@ -5168,20 +5364,29 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     return null;
   }
 
-  // The order is the dial: the real stations sit together, then your own
-  // music, then the things that are not stations at all.
-  var STATIONS = ['OFF', 'STATIC']
-    .concat(STREAMS.map(function (s) { return s.name; }))
-    .concat([MUSIC_STATION, 'TALK', 'DRONE', 'NUMBERS', 'HYMN']);
+  /* The order is the dial: the real stations, then your own music.
 
-  // EWE FM plays your own music. It takes tracks from either of two places:
-  // a radio folder sitting beside the game, named 01.mp3, 02.mp3 and so on,
-  // or any folder you point it at in the settings, which wins if both exist.
-  // Nothing ships with the build, and with no tracks at all the station is
-  // simply not offered - the dial skips straight over it.
-  var RADIO_DIR = 'radio/';
-  var RADIO_MAX = 99;
-  var RADIO_MISSES = 3;      // give up after this many gaps in a row
+     STATIC, TALK, DRONE, NUMBERS and HYMN used to sit on the end of it. They
+     were synthesised curiosities rather than stations, and with seven real
+     signals to drive between they were mostly something you turned past. The
+     static in particular is better as a thing that happens TO a station than
+     as a place on the dial. The synthesis for all of them is still in this
+     file and putting one back is one entry in this list. */
+  function clamp01(x) { return x < 0 ? 0 : (x > 1 ? 1 : x); }
+
+  var STATIONS = ['OFF']
+    .concat(STREAMS.map(function (s) { return s.name; }))
+    .concat([MUSIC_STATION]);
+
+  // EWE FM plays your own music, from whatever folder you point it at in the
+  // settings. Nothing ships with the build, and with no tracks at all the
+  // station is simply not offered - the dial skips straight over it.
+  //
+  // It used to also probe for a `radio/` folder sitting beside the game, named
+  // 01.mp3, 02.mp3 and so on. That was how it worked before the folder picker
+  // existed, and once the picker landed it was doing nothing but firing up to
+  // a hundred media requests at every boot, each one waiting on a five-second
+  // timeout, to find files that are not there.
 
   /* ------------------------------------------------------------ talk radio */
   // A 3am AM talk show, synthesised. A glottal buzz is pushed through three
@@ -5555,7 +5760,71 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     this.radioFilter.type = 'bandpass';
     this.radioFilter.frequency.value = 1500;
     this.radioFilter.Q.value = 0.8;
-    this.radioFilter.connect(this.radioGain);
+    /* ---- the FM colouration -----------------------------------------------
+       Between the bandpass and the output, three stages that between them are
+       most of what makes broadcast radio sound like broadcast radio:
+
+         PRE-EMPHASIS. FM transmission lifts the top end before sending and the
+         receiver drops it again, and the mismatch is why FM has that slightly
+         brittle, forward treble. A peaking filter at 3183 Hz - which is the
+         50 microsecond time constant used everywhere outside the Americas,
+         and therefore the right one for a car in Western Australia.
+
+         COMPRESSION. Broadcast audio is squashed to within an inch of its life
+         so it carries over road noise, and the pumping that causes is
+         audible - it is a large part of the character. Ratio 12:1 with a fast
+         attack is not subtle and is not meant to be.
+
+         SATURATION. A soft clip, for the harmonic warmth of analogue gear that
+         has been running warm in a rack for thirty years.
+
+       What this CANNOT touch is the live streams. They are played from a media
+       element that is never routed into Web Audio, because a cross-origin
+       stream with no CORS headers routed that way outputs silence. So this
+       chain colours everything the game makes itself - your own music, the
+       talk station, the numbers, the hymn, the static - and the real stations
+       arrive already sounding like radio, because they are. */
+    this.fmEmphasis = ctx.createBiquadFilter();
+    this.fmEmphasis.type = 'peaking';
+    this.fmEmphasis.frequency.value = 3183;
+    this.fmEmphasis.Q.value = 0.5;
+    this.fmEmphasis.gain.value = 4.0;
+
+    this.fmComp = ctx.createDynamicsCompressor();
+    this.fmComp.threshold.value = -24;
+    this.fmComp.knee.value = 8;
+    this.fmComp.ratio.value = 12;
+    this.fmComp.attack.value = 0.005;
+    this.fmComp.release.value = 0.15;
+
+    this.fmDrive = ctx.createWaveShaper();
+    this.fmDrive.curve = (function () {
+      // a soft clip: gentle either side of zero, rounding off hard at the ends
+      /* Unity at full scale. The first version had a 0.34 sitting in here,
+         which is a nine decibel cut on everything that goes through the chain
+         - and with a twelve-to-one compressor ahead of it and no makeup gain
+         behind it, the radio ended up too quiet to hear over the engine. A
+         waveshaper should change the shape of the signal, not its level. */
+      var n = 1024, c = new Float32Array(n), k = 25;
+      for (var i = 0; i < n; i++) {
+        var x = (i * 2) / n - 1;
+        c[i] = ((3 + k) * x) / (3 + k * Math.abs(x));
+      }
+      return c;
+    }());
+    this.fmDrive.oversample = '2x';
+
+    /* Makeup. Squashing twenty-four decibels of dynamic range at twelve to one
+       takes a lot of level out, and a compressor without makeup gain is just a
+       volume control that works unevenly. */
+    this.fmMakeup = ctx.createGain();
+    this.fmMakeup.gain.value = 2.6;
+
+    this.radioFilter.connect(this.fmEmphasis);
+    this.fmEmphasis.connect(this.fmComp);
+    this.fmComp.connect(this.fmDrive);
+    this.fmDrive.connect(this.fmMakeup);
+    this.fmMakeup.connect(this.radioGain);
     this.radioGain.connect(this.bus);
 
     this.staticSrc = ctx.createBufferSource();
@@ -5565,6 +5834,25 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     this.staticSrc.connect(this.staticGain);
     this.staticGain.connect(this.radioFilter);
     this.staticSrc.start(now);
+
+    /* Tuning hiss, off the same noise loop that is already running rather than
+       a second one. It bypasses the radio chain and goes to the bus direct,
+       and that is deliberate: the hiss has to be audible while a live stream
+       is playing, and the stream is not in the chain to duck against. Higher
+       and thinner than the between-stations static - this is the sound of the
+       needle crossing the band, not of a dead frequency. */
+    this.tuneBand = ctx.createBiquadFilter();
+    this.tuneBand.type = 'bandpass';
+    this.tuneBand.frequency.value = 8000;
+    this.tuneBand.Q.value = 1.0;
+    this.tuneGain = ctx.createGain();
+    this.tuneGain.gain.value = 0.0001;
+    this.staticSrc.connect(this.tuneBand);
+    this.tuneBand.connect(this.tuneGain);
+    this.tuneGain.connect(this.bus);
+    // how much the stations are held down while it sweeps
+    this.tuneDuck = 1;
+    this._buildSiren();
 
     this.droneGain = ctx.createGain();
     this.droneGain.gain.value = 0.0001;
@@ -5829,6 +6117,37 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 
   Audio.prototype.stationName = function () { return STATIONS[this.station]; };
 
+  /* Turning the dial. The station cuts out, the band hisses for a third of a
+     second, and the new one fades up underneath it.
+
+     The duck has to reach the live streams as well as everything else, and
+     they are not in the Web Audio graph - so it is a plain number that
+     _applyTrackGain multiplies into the element's own volume each frame,
+     rather than a gain node. */
+  Audio.prototype.tuneBurst = function () {
+    if (!this.ready || !this.ctx) return;
+    var t = this.ctx.currentTime;
+    var hold = 0.30 + Math.random() * 0.30;      // 300 to 600 ms of it
+
+    // the hiss comes up fast and goes away slowly, like a hand on a knob
+    this.tuneGain.gain.cancelScheduledValues(t);
+    this.tuneGain.gain.setValueAtTime(Math.max(0.0001, this.tuneGain.gain.value), t);
+    this.tuneGain.gain.setTargetAtTime(0.075 * this.masterVolume, t, 0.010);
+    this.tuneGain.gain.setTargetAtTime(0.0001, t + hold, 0.13);
+
+    // and the stations duck under it and come back up as it fades
+    var self = this;
+    this.tuneDuck = 0;
+    this.radioGain.gain.cancelScheduledValues(t);
+    this.radioGain.gain.setValueAtTime(Math.max(0.0001, this.radioGain.gain.value), t);
+    this.radioGain.gain.setTargetAtTime(0.0001, t, 0.012);
+    if (this._tuneTimer) clearTimeout(this._tuneTimer);
+    this._tuneTimer = setTimeout(function () {
+      self.tuneDuck = 1;
+      self._tuneTimer = null;
+    }, (hold + 0.10) * 1000);
+  };
+
   function ramp(param, value, ctx, tau) {
     if (!param) return;
     var v = Math.max(0.0001, value);
@@ -5886,12 +6205,55 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     /* radio */
     var burst = st.radioBurst > 0 ? 1 : 0;
     var name = STATIONS[this.station];
-    var wantStatic = (name === 'STATIC' ? 0.055 :
-      (name === 'TALK' ? 0.020 : (name === MUSIC_STATION ? 0.012 : 0.006))) + burst * 0.13;
-    var wantDrone = (name === 'DRONE' ? 0.09 : 0) + (name === 'HYMN' ? 0.05 : 0);
+
+    /* Reception. Out there a station does not stay with you: it comes and goes
+       over tens of kilometres as the transmitter falls behind and the country
+       gets in the way, and the way you know it is going is that the hiss comes
+       up underneath it first.
+
+       Two scales of it. A long swell that takes most of a tank to complete,
+       and a shorter one on top for the dips - a cutting, a stand of trees, the
+       back of a rise. Multiplied rather than added, so a short dip inside a
+       weak stretch is where you actually lose it.
+
+       It is keyed to distance, not to time, so parking does not fix it and
+       driving on does. */
+    var d = st.dist || 0;
+    var slow = 0.5 + 0.5 * Math.sin(d / 5400 + 1.3);
+    var quick = 0.5 + 0.5 * Math.sin(d / 610 + 4.1);
+    var reception = clamp01(0.30 + 0.95 * slow * (0.45 + 0.55 * quick));
+    // it never quite goes, and it is never quite perfect
+    this.reception = 0.10 + 0.90 * reception;
+    /* Scaled down to sit under the new chain. The static feeds the radio
+       filter, so it collected the whole of the FM colouration - the 2.6x
+       makeup and the nine decibels I stopped throwing away - which is about
+       seven and a half times more gain than it had before. The stream does
+       not go through any of that, so raising both by the same amount raised
+       the hiss and left the station where it was. These are the same levels
+       they always were, expressed against a louder chain. */
+    /* The hiss is now entirely a function of reception, and it is quiet: on a
+       good stretch you should not be able to say whether it is there. Your own
+       music does not fade - it is coming off the seat beside you, not out of
+       the air - so it gets none of this. */
+    /* Off is off. The reception hiss already skipped OFF, but a radio burst
+       still opened the gain and pushed static through it - so a set that was
+       switched off would occasionally hiss at you, which is the one thing a
+       switched-off radio cannot do. Both are gated on it now.
+
+       And the hiss is half what it was: it is meant to be the sound of a
+       station going, not a sound in its own right. */
+    var on = (name !== 'OFF');
+    var overAir = (on && name !== MUSIC_STATION);
+    var wantStatic = on
+      ? ((overAir ? (1 - this.reception) * 0.006 : 0) + burst * 0.013)
+      : 0;
+    var wantDrone = 0;
     // The radio was sitting on top of everything at 0.9. It is a car radio at
     // 3am, not the point of the drive.
-    var wantRadio = (name === 'OFF' && !burst) ? 0.0001 : 0.60;
+    var wantRadio = on ? 0.60 : 0.0001;
+    // anything arriving over the air fades with the signal; your own music
+    // does not, because it is not arriving over anything
+    if (overAir) wantRadio *= 0.45 + 0.55 * this.reception;
     ramp(this.staticGain.gain, wantStatic, ctx, 0.15);
     ramp(this.droneGain.gain, wantDrone, ctx, 0.4);
     ramp(this.radioGain.gain, wantRadio, ctx, 0.2);
@@ -6005,38 +6367,6 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
   };
 
   /* -------------------------------------------------------------- EWE FM */
-  // Probe for NN.mp3 one at a time, stopping once the numbering runs out. A
-  // media element is used rather than fetch so it still works from file://,
-  // where fetch is blocked outright.
-  Audio.prototype.scanRadio = function (done) {
-    var self = this;
-    this.tracks = [];
-    var miss = 0, i = 1;
-    function step() {
-      if (i > RADIO_MAX || miss >= RADIO_MISSES) {
-        if (done) done(self.tracks);
-        return;
-      }
-      var url = RADIO_DIR + (i < 10 ? '0' + i : String(i)) + '.mp3';
-      var probe = new window.Audio();
-      probe.preload = 'metadata';
-      var settled = false;
-      var finish = function (found) {
-        if (settled) return;
-        settled = true;
-        if (found) { self.tracks.push(url); miss = 0; } else { miss++; }
-        i++;
-        probe.src = '';
-        step();
-      };
-      probe.addEventListener('loadedmetadata', function () { finish(true); });
-      probe.addEventListener('error', function () { finish(false); });
-      setTimeout(function () { finish(false); }, 5000);
-      probe.src = url;
-    }
-    step();
-  };
-
   // Hand EWE FM a new playlist. The URLs can be anything a media element will
   // take - relative paths from the folder scan, or blob URLs made from files
   // the player picked. Whatever was playing is dropped, because the tape it
@@ -6088,14 +6418,24 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
          It also never passes through the limiter, because it cannot be routed
          into Web Audio, so it is the one thing in the game with nothing at all
          holding it back. */
-      // Halved again. A broadcast stream is mastered to sit on top of road
-      // noise in a real car, which is exactly the job it is doing here - and
-      // the traffic is the point of the game, not the soundtrack to it.
-      var rv = this.masterVolume * 0.085;
+      /* Halved twice on the way here, and that turned out to be once too many:
+         at 0.085 the station was underneath the engine, which is the one thing
+         a car radio never is. A stream is on its own path and never meets the
+         compressor, so it needs the level in the number rather than in the
+         chain. */
+      /* Loud enough to hold its own against the engine. A car radio at night
+         is not background - you can hear the announcer over the motor without
+         either one disappearing, and that is the mix being aimed at here. */
+      var rv = this.masterVolume * 0.62;
       // and it gives a little ground when something goes past, the way you
       // would reach for the dial yourself
       rv *= 1 - (this.passProx || 0) * 0.30;
-      this.streamEl.volume = onStream ? rv : 0;
+      // the tuning duck, which for a stream has to be applied to the element
+      // itself because there is no node in the graph to do it with
+      rv *= (this.tuneDuck === undefined ? 1 : this.tuneDuck);
+      // and the same signal fade, which for a stream has to be applied here
+      rv *= 0.45 + 0.55 * (this.reception === undefined ? 1 : this.reception);
+      this.streamEl.volume = onStream ? Math.max(0, rv) : 0;
     }
     if (!this.player) return;
     var on = (this.stationName() === MUSIC_STATION) && !this.muted;
@@ -6281,7 +6621,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     var g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, t);
     // no attack to speak of: it swells in over a third of a second
-    g.gain.linearRampToValueAtTime(0.55 * amt, t + 0.34);
+    g.gain.linearRampToValueAtTime(0.30 * amt, t + 0.34);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
 
     src.connect(lp); lp.connect(g); g.connect(this.bus);
@@ -6294,10 +6634,133 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     o.frequency.exponentialRampToValueAtTime(22, t + dur * 0.8);
     var og = ctx.createGain();
     og.gain.setValueAtTime(0.0001, t);
-    og.gain.linearRampToValueAtTime(0.30 * amt, t + 0.28);
+    og.gain.linearRampToValueAtTime(0.15 * amt, t + 0.28);
     og.gain.exponentialRampToValueAtTime(0.0001, t + dur * 0.9);
     o.connect(og); og.connect(this.bus);
     o.start(t); o.stop(t + dur);
+  };
+
+  /* ---- the siren ----------------------------------------------------------
+     A wail, not a yelp: the slow two-tone rise and fall you hear coming a long
+     way before you can see anything. It runs continuously and is faded in by
+     proximity rather than started and stopped, because the thing that makes it
+     work is hearing it arrive - a siren that switches on at fifty metres tells
+     you nothing you did not already know from the mirror.
+
+     Two oscillators a fifth apart with a shared slow sweep, through a bandpass
+     that gives it the horn's honk, and a touch of Doppler off the closing
+     rate. */
+  Audio.prototype._buildSiren = function () {
+    var ctx = this.ctx;
+    this.sirenGain = ctx.createGain();
+    this.sirenGain.gain.value = 0.0001;
+
+    this.sirenBand = ctx.createBiquadFilter();
+    this.sirenBand.type = 'bandpass';
+    this.sirenBand.frequency.value = 1250;
+    this.sirenBand.Q.value = 1.4;
+    this.sirenBand.connect(this.sirenGain);
+    this.sirenGain.connect(this.bus);
+
+    this.sirenA = ctx.createOscillator();
+    this.sirenA.type = 'sawtooth';
+    this.sirenA.frequency.value = 620;
+    this.sirenB = ctx.createOscillator();
+    this.sirenB.type = 'square';
+    this.sirenB.frequency.value = 930;
+    var mix = ctx.createGain();
+    mix.gain.value = 0.35;
+    this.sirenA.connect(mix);
+    this.sirenB.connect(mix);
+    mix.connect(this.sirenBand);
+
+    // the sweep: about a second and a half up and back down again
+    this.sirenLfo = ctx.createOscillator();
+    this.sirenLfo.type = 'triangle';
+    this.sirenLfo.frequency.value = 0.62;
+    var lfoA = ctx.createGain(); lfoA.gain.value = 210;
+    var lfoB = ctx.createGain(); lfoB.gain.value = 315;
+    this.sirenLfo.connect(lfoA); lfoA.connect(this.sirenA.frequency);
+    this.sirenLfo.connect(lfoB); lfoB.connect(this.sirenB.frequency);
+
+    var t = ctx.currentTime;
+    this.sirenA.start(t); this.sirenB.start(t); this.sirenLfo.start(t);
+  };
+
+  // amount 0..1 by proximity, doppler as a pitch multiplier
+  Audio.prototype.setSiren = function (amount, doppler) {
+    if (!this.ready || !this.sirenGain) return;
+    var ctx = this.ctx, t = ctx.currentTime;
+    var want = Math.max(0.0001, amount * 0.16 * this.masterVolume);
+    this.sirenGain.gain.setTargetAtTime(want, t, 0.12);
+    var d = doppler === undefined ? 1 : Math.max(0.85, Math.min(1.2, doppler));
+    this.sirenBand.frequency.setTargetAtTime(1250 * d, t, 0.15);
+  };
+
+  /* ---- thunder ------------------------------------------------------------
+     Not a bang. A lightning channel is kilometres long, so the sound from the
+     far end of it arrives seconds after the sound from the near end, and what
+     you hear is one event smeared across time - it swells, drops back, swells
+     again, and takes a long while to give up. Rolling, in other words.
+
+     It shared the fireball's boom before, which is a single decaying burst.
+     That is right for something that went off in one place and wrong for
+     something that happened along a line.
+
+     The roll is built into the sample data rather than scheduled: three or
+     four overlapping swells at irregular spacing, over brown noise, with the
+     filter closing as it goes so the tail is all bottom end. A near one gets
+     a hard leading edge; a distant one has no attack at all and just arrives. */
+  Audio.prototype.thunder = function (near) {
+    if (!this.ready) return;
+    var ctx = this.ctx, t = ctx.currentTime;
+    var n = Math.max(0, Math.min(1, near === undefined ? 0.5 : near));
+    // the further off it is, the longer it takes to get through
+    var dur = 3.4 + (1 - n) * 5.2;
+    var len = Math.floor(ctx.sampleRate * dur);
+    var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    var d = buf.getChannelData(0);
+
+    // where the swells fall, and how big each one is
+    var peaks = [];
+    var count = 3 + Math.floor(Math.random() * 2);
+    for (var i = 0; i < count; i++) {
+      peaks.push({
+        at: (i === 0 ? 0.04 + n * 0.05 : 0.12 + Math.random() * 0.75) * dur,
+        // the first is the loudest close up; far away the middle of the roll is
+        amp: (i === 0 ? 0.55 + n * 0.45 : 0.35 + Math.random() * 0.5),
+        width: (0.35 + Math.random() * 0.9) * (0.5 + (1 - n))
+      });
+    }
+
+    var last = 0;
+    for (var k = 0; k < len; k++) {
+      var sec = k / ctx.sampleRate;
+      var env = 0;
+      for (var q = 0; q < peaks.length; q++) {
+        var pk = peaks[q];
+        var x = (sec - pk.at) / pk.width;
+        env += pk.amp * Math.exp(-x * x * 2.2);
+      }
+      // and the whole thing fades out rather than stopping
+      env *= Math.pow(Math.max(0, 1 - sec / dur), 0.8);
+      var w = Math.random() * 2 - 1;
+      last = (last + 0.017 * w) / 1.017;         // brown noise
+      d[k] = last * 13 * Math.min(1.4, env);
+    }
+
+    var src = ctx.createBufferSource();
+    src.buffer = buf;
+    var lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    // a close one still has some crack in it; a distant one never did
+    lp.frequency.setValueAtTime(160 + n * 520, t);
+    lp.frequency.exponentialRampToValueAtTime(55, t + dur);
+    lp.Q.value = 0.6;
+    var g = ctx.createGain();
+    g.gain.value = 0.16 + n * 0.20;
+    src.connect(lp); lp.connect(g); g.connect(this.bus);
+    src.start(t); src.stop(t + dur);
   };
 
   Audio.prototype.beep = function (freq, dur, gain) {
@@ -6379,7 +6842,8 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 
   Audio.prototype.click = function () { this.tone(1400, 0.05, 0.05, 'square'); };
 
-  return { Audio: Audio, STATIONS: STATIONS, RADIO_DIR: RADIO_DIR, RADIO_MISSES: RADIO_MISSES, planPhrase: planPhrase, VOWELS: VOWELS, MIN_VOWEL: MIN_VOWEL };
+  return { Audio: Audio, STATIONS: STATIONS, planPhrase: planPhrase,
+           VOWELS: VOWELS, MIN_VOWEL: MIN_VOWEL };
 }));
 </script>
 <script>/* =============================================================================
@@ -6442,7 +6906,10 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
   var settings = {
     quality: Store.get('quality', IS_TOUCH ? 1 : 2),
     brightness: Store.get('brightness', 1),
-    driveSide: Store.get('driveSide', 'left'),
+    // fixed: keep left, like the rest of the country. The machinery that
+    // mirrors the car and the beam pattern still reads this, it just is not
+    // something you get asked about any more.
+    driveSide: 'left',
     paint: Store.get('paint', 0),
     mirror: Store.get('mirror', true),
     volume: Store.get('volume', 0.7),
@@ -7211,7 +7678,9 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
           '  float face = abs(dot(normalize(vN), normalize(vV)));',
           '  face = pow(face, 1.5);',
           '  float a = along * face;',
-          '  if (a <= 0.001) discard;',
+          // `!(a > x)` rather than `a <= x`, because a NaN fails every
+          // comparison and would otherwise sail straight through
+          '  if (!(a > 0.001)) discard;',
           '  gl_FragColor = vec4(uColour * a * uIntensity, a * uIntensity);',
           '}'
         ].join('\n')
@@ -7651,9 +8120,45 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
   shoulder2.position.x *= -1;
   scene.add(shoulder2);
 
+  /* The paddocks. One flat plane, but not one flat colour: it is shaded by
+     where it is in the world, so a crop in flower can run for a kilometre on
+     one side of you and stubble on the other. A canola paddock at night is not
+     really yellow - there is not enough light for colour - but it is much
+     paler than bare dirt, because a standing crop throws your headlights back
+     where soil swallows them. */
+  var groundUniforms = {
+    uScroll: { value: 0 }, uCanolaL: { value: 0 }, uCanolaR: { value: 0 }
+  };
+  var groundMat = new THREE.MeshLambertMaterial({ color: 0x3a4034 });
+  groundMat.onBeforeCompile = function (sh) {
+    sh.uniforms.uScroll = groundUniforms.uScroll;
+    sh.uniforms.uCanolaL = groundUniforms.uCanolaL;
+    sh.uniforms.uCanolaR = groundUniforms.uCanolaR;
+    sh.vertexShader = 'varying vec3 vWorld;\n' + sh.vertexShader.replace(
+      '#include <begin_vertex>',
+      '#include <begin_vertex>\n  vWorld = (modelMatrix * vec4(position, 1.0)).xyz;');
+    sh.fragmentShader = [
+      'uniform float uScroll, uCanolaL, uCanolaR;',
+      'varying vec3 vWorld;',
+      'float gh(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5); }',
+      'float gn(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);',
+      '  return mix(mix(gh(i),gh(i+vec2(1,0)),f.x), mix(gh(i+vec2(0,1)),gh(i+vec2(1,1)),f.x), f.y); }'
+    ].join('\n') + '\n' + sh.fragmentShader.replace(
+      '#include <color_fragment>',
+      [
+        '#include <color_fragment>',
+        '  float sideAmt = vWorld.x < 0.0 ? uCanolaL : uCanolaR;',
+        '  float past = smoothstep(9.0, 15.0, abs(vWorld.x));',
+        '  float crop = clamp(sideAmt * past, 0.0, 1.0);',
+        '  vec2 fp = vec2(vWorld.x * 0.42, (vWorld.z - uScroll) * 0.08);',
+        '  float tex = 0.72 + 0.28 * gn(fp) + 0.10 * gn(fp * 5.3);',
+        '  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.52, 0.47, 0.13) * tex, crop);'
+      ].join('\n'));
+  };
+
   var ground = new THREE.Mesh(
     new THREE.PlaneGeometry(600, 1000),
-    new THREE.MeshLambertMaterial({ color: 0x3a4034 })
+    groundMat
   );
   ground.rotation.x = -Math.PI / 2;
   ground.position.set(0, -0.06, ROAD_MID);
@@ -11352,11 +11857,6 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
   /*  audio                                                                  */
   /* ======================================================================= */
   var audio = new NDAudio.Audio();
-  // look for a radio folder next to the game; the station only appears if
-  // there is something in it
-  audio.scanRadio(function (found) {
-    if (found.length) updateTags();
-  });
 
   /* ---- EWE FM ------------------------------------------------------------
      The folder is picked with a plain directory input rather than the File
@@ -11425,11 +11925,10 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     eweFolder = '';
     Store.set('eweFolder', '');
     audio.setTracks([]);
-    // fall back to whatever is sitting in the radio folder beside the game
-    audio.scanRadio(function () {
-      updateTags();
-      buildSettingsUI();
-    });
+    // nothing to fall back to: EWE FM is the folder you chose, and clearing it
+    // takes the station off the dial until you choose another
+    updateTags();
+    buildSettingsUI();
   }
   // Turning your head, not swinging a camera. The eye moves across and back
   // in the seat as well as rotating, so the A-pillar and the door frame sweep
@@ -11461,6 +11960,8 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
   function cycleRadio() {
     audio.nextStation();
     if (audio._applyTrackGain) audio._applyTrackGain();
+    // the band hisses across as the dial moves
+    if (audio.tuneBurst) audio.tuneBurst();
     audio.click();
     updateTags();
   }
@@ -11647,6 +12148,14 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
 
     /* --- headlights ----------------------------------------------------- */
     var g0 = gain();
+    /* Declared here because the beam cones use it, and they are built further
+       up this function than the skirt is. It was declared down beside the
+       skirt: `var` hoists, so the cones read it as undefined, `undefined * 0.9`
+       is NaN, and the NaN went into the cone shader's intensity. A NaN never
+       satisfies `a <= 0.001`, so the discard never fired and the shader wrote
+       NaN to the framebuffer - which the driver drew as an opaque black cone
+       sitting in front of the car, occluding the road and blocking light. */
+    var avenue = Core.avenueAt(dist);
     if (hudMirror.visible) holdHudMirror();
     // candela, falling off as inverse square like a real lamp
     var beamPower = (!beamOn ? 0
@@ -11665,28 +12174,48 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       /* Rain scatters most, cloud a little (it is humid under it), and a
          blackout stretch has the clearest air of all - which is why you can
          see the stars out there and why the beam almost disappears. */
+      /* A NaN here does not blow up, it draws: it fails the discard test in the
+         cone shader and the driver paints the result. Everything feeding this
+         is a product of several terms, so one bad input silently becomes an
+         opaque black cone in front of the car. Cheap to refuse. */
       var air = 1
+        + avenue * 0.9
         + sim.weather.rain * 2.1
         + sim.weather.cover * 0.35
         + clamp((scene.fog.density - 0.011) / 0.013, 0, 1) * 0.8;
-      beamCones[b].material.uniforms.uIntensity.value = !beamOn ? 0 :
+      var coneAmt = !beamOn ? 0 :
         (sim.alive ? 1 : 0.15) * (highBeam ? 0.30 : 0.20) * air;
+      beamCones[b].material.uniforms.uIntensity.value =
+        coneAmt >= 0 && coneAmt < 1e4 ? coneAmt : 0;
       beamCones[b].scale.set(1, 1, highBeam ? 1.7 : 1.0);
     }
 
     // the skirt follows the beams exactly: dead when they are, a little
     // wider and stronger on high beam
+    /* Under an avenue the light has somewhere to land. On open road the skirt
+       is thrown at a paddock and swallowed, which is why it is kept weak; in a
+       tunnel of trees it hits trunks two metres away and comes back, and that
+       is the whole effect - your lights stop reaching into the distance and
+       start raking along bark. Without this the avenue was generating a
+       hundred and thirty trees a frame that nobody could see. */
     var spillWant = (beamOn && beamPower > 1) ? (highBeam ? 460 : 270) : 0;
     // wet tarmac throws more of the beam back up at you
-    spillWant *= 1 + sim.weather.rain * 0.35;
+    spillWant *= 1 + sim.weather.rain * 0.35 + avenue * 2.6;
     spill.intensity = lerp(spill.intensity, spillWant, 1 - Math.pow(0.001, dt));
-    spill.angle = highBeam ? 1.24 : 1.15;
+    // and it opens out, because what it is lighting is beside you now
+    spill.angle = (highBeam ? 1.24 : 1.15) * (1 + avenue * 0.12);
 
     // the drawn pool that gives the road its brightness back
     // the pool carries the road now that the flat skirt is not, so it is
     // stronger - and it is structured, so brighter does not mean flatter
+    /* Wet tarmac under your own lights. The screen-space reflection mirrors
+       lit geometry above the road, which means it only shows you anything near
+       a town - out on a dark stretch there is nothing up there to mirror, and
+       a wet road looked exactly like a dry one. What you actually see out
+       there is your own beam coming back off the water, so the pool brightens
+       and tightens with the wet. */
     beamPool.material.opacity = (!beamOn ? 0 :
-      sim.alive ? (highBeam ? 0.92 : 0.78) : 0.08) * g0;
+      sim.alive ? (highBeam ? 0.92 : 0.78) * (1 + sim.wet * 0.55) : 0.08) * g0;
     // high beam reaches further; it does not start further away
     beamPool.scale.set(1, highBeam ? 1.55 : 1.0, 1);
     beamPool.position.z = highBeam ? -25.0 : -16.0;
@@ -12555,6 +13084,14 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     hemi.intensity = (0.55 + au.level * 0.30 + fbLift) * (1 - wx.cover * 0.45)
       + wx.flash * 1.6;
 
+    // the paddocks either side, each its own value - one in flower and the
+    // next in stubble is what it looks like
+    groundUniforms.uScroll.value = dist;
+    groundUniforms.uCanolaL.value = lerp(groundUniforms.uCanolaL.value,
+      Core.canolaAt(dist + 40, -1), 1 - Math.pow(0.02, dt));
+    groundUniforms.uCanolaR.value = lerp(groundUniforms.uCanolaR.value,
+      Core.canolaAt(dist + 40, 1), 1 - Math.pow(0.02, dt));
+
     moteMat.uniforms.uScroll.value = dist;
     moteMat.uniforms.uTime.value = time;
     moteMat.uniforms.uPixel.value = renderer.getPixelRatio() * pixelScale;
@@ -12951,10 +13488,12 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       switch (e.kind) {
         case 'impact': audio.impact(e.data.amount); break;
         case 'pickup': audio.pickup(); break;
-        case 'overtake': audio.tone(520 + e.data.streak * 90, 0.16, 0.045, 'triangle'); break;
+        /* Silent. These were the game chiming at you for doing the thing the
+           game is - a note for an overtake, a note for a kilometre. What the
+           car and the road are already making is the soundtrack. */
+        case 'overtake': break;
         case 'closeCall': audio.whoosh(); break;
-        case 'milestone':
-          showKmTag(e.data.km); audio.tone(440, 0.4, 0.05, 'sine'); break;
+        case 'milestone': showKmTag(e.data.km); break;
         case 'phantomVanish': audio.stinger(); flash(0.5); break;
         case 'backseat': audio.stinger(); break;
         case 'roo': audio.tone(180, 0.3, 0.05, 'sawtooth'); break;
@@ -12963,13 +13502,13 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
            is all rumble, and close it still is not a crack - a crack is what
            you get within a few hundred metres and these never are. */
         case 'thunder':
-          audio.boom(0.55 + (e.data ? e.data.near : 0.5) * 1.1);
+          audio.thunder(e.data ? e.data.near : 0.5);
           break;
         /* The light makes no sound - it is eighty kilometres away. The bang
            arrives on its own, long after, which is the whole reason for it. */
         case 'fireballBoom':
           audio.boom(e.data && e.data.big ? 1.5 : 0.85);
-          sim.shake = Math.max(sim.shake, e.data && e.data.big ? 0.5 : 0.22);
+          sim.shake = Math.max(sim.shake, e.data && e.data.big ? 0.30 : 0.12);
           break;
         case 'restStart': audio.tone(392, 0.5, 0.035, 'sine'); break;
         case 'fuelStart': audio.tone(300, 0.35, 0.03, 'triangle'); break;
@@ -12989,8 +13528,20 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
   /* ======================================================================= */
   function show(el, on) { el.classList.toggle('hidden', !on); }
 
+  /* Announced on every run, not once at boot.
+
+     The seed was only ever printed when the page loaded, so the console kept
+     showing the first one for the whole session while the road underneath
+     changed each time - which reads exactly like being handed the same seed
+     over and over. The number was always new; nobody was telling you. */
+  function announceSeed() {
+    console.log('THE GREAT EASTERN v' + Core.VERSION + '  seed ' + sim.seed +
+      '  (add ?seed=' + sim.seed + ' to the url to drive this road again)');
+  }
+
   function startRun() {
     sim.reset(runOptions());
+    announceSeed();
     tiltNeutral = null;
     padReset();
     setBeamMode(BEAM_DIP);
@@ -13059,11 +13610,23 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
   }
 
   /* ---- settings UI ------------------------------------------------------- */
+  var settingsTab = 'general';
+
   function buildSettingsUI() {
     var host = $('settingsBody');
     host.innerHTML = '';
 
-    function opt(label, values, get, set, note) {
+    var tabs = $('settingsTabs').children;
+    for (var ti = 0; ti < tabs.length; ti++) {
+      tabs[ti].classList.toggle('sel', tabs[ti].getAttribute('data-tab') === settingsTab);
+      tabs[ti].onclick = (function (name) {
+        return function () { settingsTab = name; audio.click(); buildSettingsUI(); };
+      }(tabs[ti].getAttribute('data-tab')));
+    }
+
+    // every option declares which tab it belongs on, and the rest are skipped
+    function opt(tab, label, values, get, set, note) {
+      if (tab !== settingsTab) return;
       var wrap = document.createElement('div');
       wrap.className = 'opt';
       var l = document.createElement('div');
@@ -13097,37 +13660,38 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       host.appendChild(wrap);
     }
 
-    opt('Graphics', [
+    opt('visuals', 'Graphics', [
       { label: 'Low', value: 0 }, { label: 'Medium', value: 1 }, { label: 'High', value: 2 }
     ], function () { return settings.quality; }, function (v) { settings.quality = v; });
 
-    opt('Brightness', BRIGHTNESS.map(function (b, i) { return { label: b.label, value: i }; }),
+    opt('visuals', 'Brightness', BRIGHTNESS.map(function (b, i) { return { label: b.label, value: i }; }),
       function () { return settings.brightness; }, function (v) { settings.brightness = v; });
 
-    opt('Street lighting', [
+    opt('visuals', 'Street lighting', [
       { label: 'Outback', value: 'outback' },
       { label: 'Country', value: 'country' },
       { label: 'Town', value: 'town' }
     ], function () { return settings.lampSpacing; }, function (v) { settings.lampSpacing = v; });
 
-    opt('Which side of the road', [
-      { label: 'Keep left', value: 'left' },
-      { label: 'Keep right', value: 'right' }
-    ], function () { return settings.driveSide; }, function (v) { settings.driveSide = v; });
+    /* No road-side option. The game is set on the Great Eastern Highway and
+       you keep left, the same as every other road in the country - offering
+       it as a preference was offering a setting for something that is not a
+       preference. The machinery underneath still flips the car, the mirrors
+       and the beam pattern; it is simply always told 'left'. */
 
-    opt('Paint', PAINTS.map(function (p, i) { return { label: p.name, value: i }; }),
+    opt('general', 'Paint', PAINTS.map(function (p, i) { return { label: p.name, value: i }; }),
       function () { return settings.paint; }, function (v) { settings.paint = v; });
 
-    opt('Mirrors', [{ label: 'On', value: true }, { label: 'Off', value: false }],
+    opt('visuals', 'Mirrors', [{ label: 'On', value: true }, { label: 'Off', value: false }],
       function () { return settings.mirror; }, function (v) { settings.mirror = v; });
 
-    opt('Steering', [{ label: 'Normal', value: false }, { label: 'Inverted', value: true }],
+    opt('general', 'Steering', [{ label: 'Normal', value: false }, { label: 'Inverted', value: true }],
       function () { return settings.invertSteer; }, function (v) { settings.invertSteer = v; });
 
-    opt('Arms on the wheel', [{ label: 'Show', value: true }, { label: 'Hide', value: false }],
+    opt('general', 'Arms on the wheel', [{ label: 'Show', value: true }, { label: 'Hide', value: false }],
       function () { return settings.arms; }, function (v) { settings.arms = v; });
 
-    opt('Touch steering', [
+    opt('general', 'Touch steering', [
       { label: 'Drag', value: 'drag' }, { label: 'Buttons', value: 'buttons' },
       { label: 'Tilt', value: 'tilt' }
     ], function () { return settings.touchSteer; }, function (v) {
@@ -13136,14 +13700,14 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       if (v === 'tilt') enableTilt();
     });
 
-    opt('Touch controls', [
+    opt('general', 'Touch controls', [
       { label: 'Auto', value: 'auto' }, { label: 'On', value: 'on' }, { label: 'Off', value: 'off' }
     ], function () { return settings.touch; }, function (v) { settings.touch = v; });
 
     /* Worth a switch of its own. On 'often' it is up most of the time, which
        is no way to meet one for the first time but exactly what you want when
        you are trying to look at it. */
-    opt('Southern lights', [
+    opt('extra', 'Southern lights', [
       { label: 'Rare', value: 'auto' },
       { label: 'Often', value: 'often' },
       { label: 'Off', value: 'off' }
@@ -13152,7 +13716,7 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       if (state === 'title') sim.reset(runOptions());
     });
 
-    opt('Strange things', [
+    opt('extra', 'Strange things', [
       { label: 'Rare', value: 'auto' },
       { label: 'Often', value: 'often' },
       { label: 'Off', value: 'off' }
@@ -13165,7 +13729,7 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
        being built turns up in the first minute of a drive rather than the
        fifth. Everything rare drops its opening guard and comes up to roughly
        one a kilometre. */
-    opt('Preview events', [
+    opt('extra', 'Preview events', [
       { label: 'Off', value: false }, { label: 'On', value: true }
     ], function () { return settings.preview; }, function (v) {
       settings.preview = v;
@@ -13173,7 +13737,7 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     }, 'For trying things out. Everything rare happens inside the first ' +
        'kilometre or two, which is no way to actually play.');
 
-    opt('Mode', [
+    opt('extra', 'Mode', [
       { label: 'Normal', value: 'normal' },
       { label: 'Open road', value: 'openRoad' }
     ], function () { return settings.mode; }, function (v) {
@@ -13182,19 +13746,19 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       if (state === 'title') sim.reset(runOptions());
     });
 
-    opt('Film stock', [
+    opt('visuals', 'Film stock', [
       { label: '500T', value: true }, { label: 'Off', value: false }
     ], function () { return settings.film; }, function (v) {
       settings.film = v;
     });
 
-    opt('Dither', [
+    opt('visuals', 'Dither', [
       { label: 'On', value: true }, { label: 'Off', value: false }
     ], function () { return settings.dither; }, function (v) {
       settings.dither = v;
     });
 
-    opt('Frame rate', [
+    opt('visuals', 'Frame rate', [
       { label: '24 \u00b7 film', value: 24 },
       { label: '30', value: 30 },
       { label: '48', value: 48 },
@@ -13205,7 +13769,7 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       frameSamples.length = 0;
     });
 
-    opt('Volume', [
+    opt('sound', 'Volume', [
       { label: 'Mute', value: 0 }, { label: '25%', value: 0.25 },
       { label: '50%', value: 0.5 }, { label: '100%', value: 1.0 }
     ], function () { return settings.volume; }, function (v) {
@@ -13216,6 +13780,7 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     });
 
     /* ---- EWE FM ---- */
+    if (settingsTab !== 'sound') return;
     var eweWrap = document.createElement('div');
     eweWrap.className = 'opt';
     var eweLabel = document.createElement('div');
@@ -13246,8 +13811,6 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     if (eweCount) {
       eweNote.textContent = eweCount + (eweCount === 1 ? ' track from ' : ' tracks from ') +
         (eweFolder || 'your folder');
-    } else if (audio.tracks && audio.tracks.length) {
-      eweNote.textContent = audio.tracks.length + ' from the radio folder beside the game';
     } else {
       eweNote.textContent = 'Point it at a folder of music. It is picked fresh ' +
         'each time the game is opened.';
@@ -13632,14 +14195,37 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
         skid: sim.skid,
         radioBurst: sim.radioBurst,
         dread: sim.dread,
+        // reception is a property of where you are, not of how long you have
+        // been listening, so the radio needs to know how far down the road it is
+        dist: sim.dist,
         alive: sim.alive
       });
+
+      /* The siren, faded by how close the nearest pursuing car is. It carries
+         a long way - you should hear one behind you well before it is a shape
+         in the mirror, which is most of what makes being chased out here feel
+         like being chased. */
+      var siren = 0, sirenDop = 1;
+      for (var pi = 0; pi < sim.entities.length; pi++) {
+        var pe = sim.entities[pi];
+        if (pe.kind !== 'police' || !pe.alive) continue;
+        if (pe.state !== 'chasing' && pe.state !== 'pullover') continue;
+        var away = Math.abs(pe.s - sim.dist);
+        var amt = Math.max(0, 1 - away / 420);
+        if (amt > siren) {
+          siren = amt * amt;
+          // closing on you raises it, dropping back lowers it
+          sirenDop = 1 + Math.max(-0.15, Math.min(0.2, (pe.speed - sim.speed) / 60));
+        }
+      }
+      audio.setSiren(siren, sirenDop);
     } else if (state === 'title') {
       // slow idle drift so the menu has something moving behind it
       sim.dist += dt * 9;
       sim.wheelSpin += dt * 9 / 0.3316;
       sim.speed = 9;
-      audio.update({ rpmNorm: 0.2, throttle: 0.12, speed: 9, rumble: 0, skid: 0, radioBurst: 0, dread: 0, alive: true });
+      audio.update({ rpmNorm: 0.2, throttle: 0.12, speed: 9, rumble: 0, skid: 0,
+        radioBurst: 0, dread: 0, dist: sim.dist, alive: true });
     }
 
     if (!draw || contextLost) return;
@@ -13887,12 +14473,18 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
   show(elTitle, true);
   $('bestValue').textContent = Core.formatDistance(Store.get(bestKey(), 0));
   $('verTag').textContent = Core.VERSION;
-  console.log('THE GREAT EASTERN v' + Core.VERSION + '  seed ' + sim.seed +
-    '  (add ?seed=' + sim.seed + ' to the url to drive this road again)');
+  /* No seed announced at boot. The simulation running behind the title screen
+     is scenery, not a road you are driving, and its seed is thrown away the
+     moment you press Drive - printing it just put a number in the console that
+     was wrong by the time it mattered, which with ?seed= in the url was
+     actively misleading. startRun announces the road you are actually on. */
   requestAnimationFrame(loop);
 
   return {
     sim: sim, scene: scene, renderer: renderer, settings: settings,
+    // exposed so the audio graph can be inspected from a test without
+    // reaching into the closure
+    audio: audio,
     version: Core.VERSION
   };
 };
