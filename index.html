@@ -694,7 +694,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  var VERSION = '3.16.0';
+  var VERSION = '3.17.0';
 
   /* --------------------------------------------------------------- constants */
   var C = {
@@ -5970,6 +5970,17 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
   };
 
+  /* Two trims on top of the master. The mix is tuned at 1.0 for both - what
+     these are for is that a car radio is a personal thing: some people want it
+     under the engine and some want it over, and how much hiss you can stand on
+     a weak signal is not something anybody else can decide for you. */
+  Audio.prototype.setRadioLevel = function (v) {
+    this.radioLevel = Math.max(0, Math.min(2, v));
+  };
+  Audio.prototype.setStaticLevel = function (v) {
+    this.staticLevel = Math.max(0, Math.min(2, v));
+  };
+
   Audio.prototype.setVolume = function (v) {
     this.masterVolume = v;
     if (this.master) this.master.gain.value = this.muted ? 0 : v;
@@ -6244,13 +6255,16 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
        station going, not a sound in its own right. */
     var on = (name !== 'OFF');
     var overAir = (on && name !== MUSIC_STATION);
+    var sl = this.staticLevel === undefined ? 1 : this.staticLevel;
     var wantStatic = on
-      ? ((overAir ? (1 - this.reception) * 0.006 : 0) + burst * 0.013)
+      ? ((overAir ? (1 - this.reception) * 0.006 : 0) + burst * 0.013) * sl
       : 0;
     var wantDrone = 0;
     // The radio was sitting on top of everything at 0.9. It is a car radio at
     // 3am, not the point of the drive.
-    var wantRadio = on ? 0.60 : 0.0001;
+    var wantRadio = on
+      ? 0.60 * (this.radioLevel === undefined ? 1 : this.radioLevel)
+      : 0.0001;
     // anything arriving over the air fades with the signal; your own music
     // does not, because it is not arriving over anything
     if (overAir) wantRadio *= 0.45 + 0.55 * this.reception;
@@ -6426,7 +6440,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       /* Loud enough to hold its own against the engine. A car radio at night
          is not background - you can hear the announcer over the motor without
          either one disappearing, and that is the mix being aimed at here. */
-      var rv = this.masterVolume * 0.62;
+      var rv = this.masterVolume * 0.62 * (this.radioLevel === undefined ? 1 : this.radioLevel);
       // and it gives a little ground when something goes past, the way you
       // would reach for the dial yourself
       rv *= 1 - (this.passProx || 0) * 0.30;
@@ -6913,6 +6927,8 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     paint: Store.get('paint', 0),
     mirror: Store.get('mirror', true),
     volume: Store.get('volume', 0.7),
+    radioLevel: Store.get('radioLevel', 1),
+    staticLevel: Store.get('staticLevel', 1),
     muted: Store.get('muted', false),
     invertSteer: Store.get('invertSteer', false),
     touch: Store.get('touch', 'auto'),
@@ -13559,6 +13575,9 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     audio.resume();
     audio.setVolume(settings.volume);
     audio.setMuted(settings.muted);
+    // the saved trims, or the audio starts every session at the default mix
+    audio.setRadioLevel(settings.radioLevel);
+    audio.setStaticLevel(settings.staticLevel);
   }
 
   function onDeath() {
@@ -13778,6 +13797,22 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       audio.setVolume(v);
       audio.setMuted(settings.muted);
     });
+
+    opt('sound', 'Radio level', [
+      { label: 'Low', value: 0.5 }, { label: 'Normal', value: 1 },
+      { label: 'Loud', value: 1.45 }
+    ], function () { return settings.radioLevel; }, function (v) {
+      settings.radioLevel = v;
+      audio.setRadioLevel(v);
+    }, 'How the stations sit against the engine.');
+
+    opt('sound', 'Radio static', [
+      { label: 'Off', value: 0 }, { label: 'Less', value: 0.5 },
+      { label: 'Normal', value: 1 }, { label: 'More', value: 1.8 }
+    ], function () { return settings.staticLevel; }, function (v) {
+      settings.staticLevel = v;
+      audio.setStaticLevel(v);
+    }, 'The hiss that comes up as a signal fades.');
 
     /* ---- EWE FM ---- */
     if (settingsTab !== 'sound') return;
