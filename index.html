@@ -512,6 +512,27 @@ button.chip:focus-visible{outline:3px solid var(--dust);outline-offset:3px}
   .tabs{margin-bottom:8px}
 }
 
+/* ---- sliders -------------------------------------------------------------
+   Styled to the same language as the plates: a dark channel with a sodium fill
+   behind the thumb, and the thumb itself a sheared bone plate. The native
+   input is kept underneath because it already handles touch, mouse and keys. */
+.optVal{float:right;color:var(--sodium);font-weight:700;letter-spacing:.08em}
+.slider{-webkit-appearance:none;appearance:none;width:100%;height:26px;
+  background:transparent;cursor:pointer;margin:2px 0 0}
+.slider:focus{outline:none}
+.slider::-webkit-slider-runnable-track{height:6px;background:var(--ink-3);
+  border:1px solid #2c333f}
+.slider::-moz-range-track{height:6px;background:var(--ink-3);
+  border:1px solid #2c333f}
+.slider::-moz-range-progress{height:6px;background:var(--sodium-d)}
+.slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+  width:16px;height:22px;margin-top:-9px;background:var(--dust);
+  border:1px solid var(--sodium);transform:skewX(var(--lean))}
+.slider::-moz-range-thumb{width:16px;height:22px;background:var(--dust);
+  border:1px solid var(--sodium);border-radius:0;transform:skewX(var(--lean))}
+.slider:hover::-webkit-slider-thumb{background:#fff}
+.slider:hover::-moz-range-thumb{background:#fff}
+
 </style>
 <body>
 <canvas id="gl"></canvas>
@@ -694,7 +715,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  var VERSION = '3.17.0';
+  var VERSION = '3.18.0';
 
   /* --------------------------------------------------------------- constants */
   var C = {
@@ -13644,6 +13665,52 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     }
 
     // every option declares which tab it belongs on, and the rest are skipped
+    /* A slider, for the things that are a continuum rather than a short list of
+       choices. Volume and the two radio trims are exactly that: nobody wants
+       "Low, Normal, Loud", they want it a bit quieter than it is now. Kept as
+       a native range input - it is the one control a browser already makes
+       work properly with a finger, a mouse and a keyboard, and reinventing it
+       would mean reinventing all three. */
+    function slider(tab, label, lo, hi, step, get, set, fmt, note) {
+      if (tab !== settingsTab) return;
+      var wrap = document.createElement('div');
+      wrap.className = 'opt';
+      var l = document.createElement('div');
+      l.className = 'optLabel';
+      l.textContent = label;
+      var val = document.createElement('span');
+      val.className = 'optVal';
+      l.appendChild(val);
+
+      var row = document.createElement('div');
+      row.className = 'optRow';
+      var r = document.createElement('input');
+      r.type = 'range';
+      r.className = 'slider';
+      r.min = lo; r.max = hi; r.step = step;
+      r.value = get();
+      val.textContent = fmt(get());
+
+      // live while dragging, saved when it settles
+      r.oninput = function () {
+        var v = parseFloat(r.value);
+        val.textContent = fmt(v);
+        set(v);
+        applyLiveSettings();
+      };
+      r.onchange = function () { saveSettings(); };
+      row.appendChild(r);
+      wrap.appendChild(l);
+      wrap.appendChild(row);
+      if (note) {
+        var n = document.createElement('div');
+        n.className = 'optNote';
+        n.textContent = note;
+        wrap.appendChild(n);
+      }
+      host.appendChild(wrap);
+    }
+
     function opt(tab, label, values, get, set, note) {
       if (tab !== settingsTab) return;
       var wrap = document.createElement('div');
@@ -13788,31 +13855,26 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       frameSamples.length = 0;
     });
 
-    opt('sound', 'Volume', [
-      { label: 'Mute', value: 0 }, { label: '25%', value: 0.25 },
-      { label: '50%', value: 0.5 }, { label: '100%', value: 1.0 }
-    ], function () { return settings.volume; }, function (v) {
-      settings.volume = v;
-      settings.muted = (v === 0);
-      audio.setVolume(v);
-      audio.setMuted(settings.muted);
-    });
+    var pct = function (v) { return Math.round(v * 100) + '%'; };
 
-    opt('sound', 'Radio level', [
-      { label: 'Low', value: 0.5 }, { label: 'Normal', value: 1 },
-      { label: 'Loud', value: 1.45 }
-    ], function () { return settings.radioLevel; }, function (v) {
-      settings.radioLevel = v;
-      audio.setRadioLevel(v);
-    }, 'How the stations sit against the engine.');
+    slider('sound', 'Volume', 0, 1, 0.01,
+      function () { return settings.volume; },
+      function (v) {
+        settings.volume = v;
+        settings.muted = (v <= 0.001);
+        audio.setVolume(v);
+        audio.setMuted(settings.muted);
+      }, pct);
 
-    opt('sound', 'Radio static', [
-      { label: 'Off', value: 0 }, { label: 'Less', value: 0.5 },
-      { label: 'Normal', value: 1 }, { label: 'More', value: 1.8 }
-    ], function () { return settings.staticLevel; }, function (v) {
-      settings.staticLevel = v;
-      audio.setStaticLevel(v);
-    }, 'The hiss that comes up as a signal fades.');
+    slider('sound', 'Radio level', 0, 1.6, 0.01,
+      function () { return settings.radioLevel; },
+      function (v) { settings.radioLevel = v; audio.setRadioLevel(v); },
+      pct, 'How the stations sit against the engine.');
+
+    slider('sound', 'Radio static', 0, 2, 0.01,
+      function () { return settings.staticLevel; },
+      function (v) { settings.staticLevel = v; audio.setStaticLevel(v); },
+      pct, 'The hiss that comes up as a signal fades.');
 
     /* ---- EWE FM ---- */
     if (settingsTab !== 'sound') return;
