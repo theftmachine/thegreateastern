@@ -715,7 +715,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  var VERSION = '3.18.0';
+  var VERSION = '3.24.0';
 
   /* --------------------------------------------------------------- constants */
   var C = {
@@ -747,6 +747,20 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 
     // draw / sim distance
     VIEW_AHEAD: 240.0,
+    /* Crossings reach much further than anything else on the ground, for the
+       same reason the lamps do: the flashing lights ARE the warning, and a
+       warning you cannot see until you are five seconds from the rails is not
+       a warning, it is an ambush.
+
+       They were on VIEW_AHEAD, which is 240 m. The lights came on at a median
+       of 980 m and the whole crossing - lamps included - simply did not exist
+       in the scene until you were nearly on top of it, so twenty-two seconds
+       of warning arrived as five. This has to clear TRAIN_ARM_MAX with room to
+       spare or the same bug comes back the moment that number moves.
+
+       Only the lamps carry that far. The crossbucks, the ballast and the rails
+       are ordinary fogged geometry and resolve when everything else does. */
+    CROSSING_AHEAD: 1600.0,
     // Oncoming headlights have to be visible long before the car is, or there
     // is no way to judge an overtake. They close at ~70 m/s, so a kilometre of
     // warning is only about fifteen seconds.
@@ -1080,7 +1094,21 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
        bracket as a wide load, and it should not be in that bracket - the whole
        thing only works if you have gone a long way without seeing one, and the
        'Often' switch exists for when you want to look at one on purpose. */
-    UFO_CHANCE_KM: 0.038,
+    /* Raised, because this number no longer means what it used to. It was the
+       rate of ONE event; the slot now serves five of them, and dividing an
+       every-twenty-six-kilometres event five ways gave a paddock lift every
+       seventy-seven kilometres and a blackout every two hundred and ninety.
+       Rare stopped meaning rare and started meaning absent.
+
+       Set by measurement rather than by arithmetic, because the arithmetic
+       lies. A rate here is a roll per kilometre, and a roll that comes up
+       while the queue is busy is simply discarded - it does not wait. The
+       queue is open for a little over half the road, so the number needed is
+       roughly twice the one the sums give you, and the only honest way to set
+       it is to drive a thousand kilometres and count. At 0.16 the paddock lift
+       comes up about every thirty kilometres, which is where it was tuned to
+       be before it had to share the slot. */
+    UFO_CHANCE_KM: 0.16,
     UFO_MIN_DIST: 1500.0,
     UFO_AHEAD_MIN: 620.0,      // metres up the road when it starts
     UFO_AHEAD_MAX: 950.0,
@@ -1093,6 +1121,151 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     UFO_LIFT: 4.0,             //          taking something up
     UFO_LEAVE: 1.1,            //          and going
     UFO_SCORCH_LIFE: 900.0,    // metres of road the burnt ring survives behind
+
+    /* ---- the pacer --------------------------------------------------------
+       It holds station. Everything else out here goes past you - that is what
+       the road is - and this one does not, and it takes a surprisingly long
+       time to notice because a light that is not moving relative to you looks
+       like a light that is not moving.
+
+       Slightly ahead rather than abeam: abeam it is out of shot on a phone,
+       and slightly ahead it sits in the top corner of the windscreen where you
+       keep catching it. */
+    PACE_AHEAD: 62.0,          // metres up the road it holds
+    PACE_OFF_MIN: 44.0,        // and out to the side
+    PACE_OFF_MAX: 78.0,
+    PACE_HIGH_MIN: 58.0,
+    PACE_HIGH_MAX: 96.0,
+    PACE_HOLD_MIN: 26.0,       // seconds of it keeping up
+    PACE_HOLD_MAX: 52.0,
+    PACE_LAG: 2.6,             // how hard it corrects: high enough to be eerie
+    PACE_TOLD_AT: 5.0,         // seconds before the game admits it is there
+
+    /* ---- missing time -----------------------------------------------------
+       Long enough that it cannot be a glance at the radio, short enough that
+       it is not a joke. */
+    SKIP_MIN: 380.0,           // seconds
+    SKIP_MAX: 760.0,
+    SKIP_EVERY_MIN: 34000.0,   // metres between, drawn flat in this range
+    SKIP_EVERY_MAX: 76000.0,
+    SKIP_FIRST: 6000.0,        // and how far in before the first one can land
+
+    /* ---- the blackout -----------------------------------------------------
+       Four seconds at a hundred and forty is two hundred metres driven from
+       memory. That is the whole event and it does not need to be longer. */
+    DARK_SECONDS_MIN: 3.4,
+    DARK_SECONDS_MAX: 5.2,
+    /* Rarer than anything else in the game, because it is the only one of
+       these that can end a run. Once or twice on a long night. */
+    DARK_EVERY_MIN: 52000.0,
+    DARK_EVERY_MAX: 118000.0,
+    DARK_FIRST: 11000.0,
+
+    /* ---- the train --------------------------------------------------------
+       The line runs beside the road for most of its length and swings across
+       it at the crossings, and every so often there is something on it.
+
+       This is the one event in the game you can lose a whole run to by doing
+       nothing wrong, so the honesty of the warning is the entire design. Real
+       Australian crossings arm on train detection, not on car detection: the
+       lights come on because something is coming, and where you happen to be
+       at that moment is your problem. So the gamble is real and it is not
+       rigged either way - the sim decides when the train arrives, and how much
+       road you have left when the lights start is whatever it is.
+
+       What IS tuned is the spread of that gap, because a warning that is
+       always beatable is not a warning and one that never is is a red light.
+       The roll is biased long: about a quarter of them you can take at the
+       pace you were already going, about half are a genuine question, and the
+       rest you stop for. The bias is TRAIN_ARM_BIAS - under one it pushes the
+       draw towards the far end. */
+    /* Which crossings have something on them, and where.
+
+       A per-kilometre roll is the wrong shape for an event that can only
+       happen in one place. Crossings are thirteen kilometres apart and under
+       half of them are active, so a rate that reads "rare" measured against
+       the road measures out as "never" measured against the crossings.
+
+       So the roll is per crossing, deterministic from its index, and the
+       scheduler's own rate is only there to make sure it fires promptly once
+       you are inside the arming window. Seven in ten active crossings puts a
+       train roughly every thirty kilometres, which is one to three in a run -
+       the right frequency for the biggest thing that happens out here.
+
+       Better than one in two, so it is properly a lottery on the crossing in
+       front of you: the first one you come to is as likely to have something
+       on it as any other, and going three or four in a row without is an
+       ordinary night. It is set above the rate you actually want because a
+       roll that lands while the queue is busy is discarded rather than
+       deferred, and about half of them do. */
+    TRAIN_AT_CROSSING: 0.55,
+    TRAIN_ARM_WINDOW: 700.0,   // road either side of the draw it may arm in
+    TRAIN_RATE: 2.5,           // per km inside that window: near enough certain
+    TRAIN_MIN_DIST: 2200.0,
+    TRAIN_WARN: 22.0,          // seconds of flashing before it reaches the road
+    TRAIN_ARM_MIN: 300.0,      // metres you might have left when they start
+    TRAIN_ARM_MAX: 1250.0,
+    TRAIN_ARM_BIAS: 0.55,
+    /* Eighty km/h. A loaded wheat train does not do much more than that on
+       branch line, and it is slow enough that you can watch it not stopping. */
+    TRAIN_SPEED: 22.0,
+    TRAIN_LOCO_LEN: 21.0,
+    TRAIN_WAGON_LEN: 14.6,
+    TRAIN_WAGONS_MIN: 22,
+    TRAIN_WAGONS_MAX: 40,      // 27 seconds of sitting there at the far end
+    TRAIN_APPROACH: 1150.0,    // how far out along the line it starts
+    /* How much road either side of the rails will kill you. Half a wagon plus
+       half a car, and then some: being clipped by the last wagon is the same
+       outcome as being hit by the first one. */
+    TRAIN_CORRIDOR: 4.2,
+    TRAIN_CLEAR: 26.0,         // metres past the road before the tail is gone
+    /* ---- what everyone else does about it ---------------------------------
+       Traffic stops for the lights. It has to, and not only because that is
+       what happens: a queue of tail lights standing still on a road where
+       nothing ever stands still is a far better warning than anything the game
+       could put on the screen, and it is the one that works in the mirror as
+       well as through the windscreen.
+
+       It also gives the crossing its second use. Stopping is now something you
+       do WITH other cars rather than alone, and running it means going round a
+       queue that is doing the sensible thing - which is a much worse decision
+       to make than the same decision made on an empty road. */
+    XING_STOP_BACK: 5.0,       // metres behind the rails the first car holds
+    XING_BRAKE: 2.0,           // m/s^2, an unhurried stop rather than a panic
+    XING_BRAKE_RIG: 1.15,      // forty tonnes takes rather longer about it
+    XING_SEE: 420.0,           // how far out a car reads the lights
+    XING_SEE_RIG: 700.0,       // and a rig, which needs the warning more
+
+    // close enough that beating it was worth saying so about: five seconds
+    TRAIN_NARROW: 110.0,
+    // and how close it has to be before it shouts at you for standing there
+    TRAIN_SHOUT: 210.0,
+    // horn: how far out it starts sounding, and how far apart the blasts are
+    TRAIN_HORN_AT: 640.0,
+    TRAIN_HORN_GAP: 4.6,
+
+    /* ---- the one that turns off -------------------------------------------
+       It comes up behind you, sits there long enough that you look twice, goes
+       past, gets in front, and then indicates and turns off the road. There is
+       no road. It keeps going anyway, at a steady angle out into the paddock,
+       getting smaller, and its indicator is still going.
+
+       Nothing happens. That is the event. It is solid while it is on the road
+       - it is a car, you can hit it - and it stops being anything at all the
+       moment it leaves, because a thing you can crash into out in the stubble
+       is a puzzle and this is not a puzzle. */
+    LEAVER_CHANCE_KM: 0.075,
+    LEAVER_MIN_DIST: 3000.0,
+    LEAVER_BEHIND: 165.0,      // where it comes into the mirror
+    LEAVER_HOLD_MIN: 11.0,     // seconds it sits back there before committing
+    LEAVER_HOLD_MAX: 24.0,
+    LEAVER_OVER: 9.5,          // m/s it will out-run you by to get past
+    LEAVER_LEAD: 52.0,         // and how far ahead it settles once it is there
+    LEAVER_LEAD_HOLD: 5.5,     // seconds before the indicator comes on
+    LEAVER_BLINK_HOLD: 3.2,    // and how long it indicates before it goes
+    LEAVER_TURN_SPEED: 17.0,   // m/s it takes the turn that is not there at
+    LEAVER_ANGLE: 0.62,        // radians off the road, held all the way out
+    LEAVER_GONE: 165.0,        // metres into the paddock before it is retired
 
     /* ---- preview ----------------------------------------------------------
        A switch for building things with. Every rare event drops its opening
@@ -1574,13 +1747,27 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
   }
 
   function crossingInfo(index) {
+    /* Whether this one has something on it. Decided by where the crossing is
+       and nothing else, so it is the same answer every time you pass and the
+       same answer for every part of the code that asks.
+
+       It used to be rolled on top of `active`, which meant only the minority
+       of crossings that already had lights could ever have a train - and with
+       lights on 45% and the train on 70% of those, two thirds of the crossings
+       in the game could never have one no matter how far you drove. Now any
+       crossing can, and a crossing that does has lights BECAUSE it does: a
+       line with traffic on it gets signalled. That is also the right way
+       round physically, which the old order was not. */
+    var train = hash1(index, 653) < C.TRAIN_AT_CROSSING;
     return {
       index: index,
       s: index * CROSSING_SLOT + 4100 + hash1(index, 641) * 6400,
       skew: (hash1(index, 643) - 0.5) * 0.5,
-      // a minority are active crossings; of those, some are working away to
-      // themselves with nothing coming
-      active: hash1(index, 645) < 0.45,
+      train: train,
+      // signalled if anything runs on it, and some of the rest are signalled
+      // anyway - those are the ones working away to themselves with nothing
+      // coming, which is still the better joke now that some of them resolve
+      active: train || hash1(index, 645) < 0.45,
       haunted: hash1(index, 647) < 0.30
     };
   }
@@ -1716,6 +1903,13 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     this.oddMode = opts.odd === 'often' || opts.odd === 'off' ? opts.odd : 'auto';
     // for building things with, not for playing
     this.preview = !!opts.preview;
+    /* Every crossing has something on it, and it arms the moment it can.
+
+       Narrower than `preview`, which turns everything up at once and so is no
+       good for looking at one thing: this leaves the rest of the road alone.
+       Reached from the url as ?train, because it is for standing at a crossing
+       and watching the thing arrive rather than for playing. */
+    this.forceTrain = !!opts.forceTrain;
     /* Where the last set piece was, and where each one was individually. Both
        are distances rather than times, because the road is what the player
        experiences as "a while ago". */
@@ -1758,6 +1952,41 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
        zeroes it every frame you are not. Writing to it from here broke this
        timer and quietly doubled the rate the car healed at. */
     this.stoppedFor = 0;
+    /* Seconds of the car being electrically dead, and how many there were to
+       begin with, so the last third of it can be the power coming back rather
+       than a switch. */
+    this.carDark = 0;
+    this.carDarkTotal = 0;
+    this.skipped = 0;
+    /* Where the next one of each falls. Their own counters, not the queue's:
+       neither of these needs the road to be clear, because neither of them
+       puts anything on it. */
+    this.nextSkip = C.SKIP_FIRST +
+      this.rng() * (C.SKIP_EVERY_MAX - C.SKIP_EVERY_MIN) * 0.5;
+    this.nextDark = C.DARK_FIRST +
+      this.rng() * (C.DARK_EVERY_MAX - C.DARK_EVERY_MIN) * 0.5;
+    /* Something on the line.
+
+       `u` is where the front of it is along the crossing's own axis, in
+       metres, with zero at the middle of the road and negative on the side it
+       is coming from. The road runs across that axis, so a car at lateral
+       position x sits at `x * dir` on it - which is the whole of the collision
+       test and the reason the train is state rather than an entity. Entities
+       are indexed by how far up the ROAD they are, and this one is not on the
+       road at all until the moment it is. */
+    this.train = {
+      on: false, phase: 'none', t: 0,
+      s: 0,                  // where the crossing is
+      xing: null,            // and which one
+      u: 0, len: 0, wagons: 0, dir: 1, skew: 0,
+      warn: 0,               // seconds of flashing left before it arrives
+      lights: false,         // are the crossing lights going
+      hornAt: 0, horns: 0,
+      armGap: 0,
+      // the train's position when you cleared the rails, or null if you have
+      // not; and whether it has already shouted at you for being on them
+      passedU: null, yelled: false
+    };
     this.aurora = {
       on: false, level: 0, phase: 'none', t: 0, hold: 0,
       bearing: 0, surge: 0, surgeAt: 0, burst: 0, seen: false
@@ -2064,6 +2293,12 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
   // it is a separate queue - the two never need checking against each other.
   function laneOf(e) {
     if (e.shunted) return 0;           // a wreck is not in a lane any more
+    /* Nor is a car that has left the road. The separation pass holds cars in
+       a queue by their position along the road, and once the leaver is out in
+       the paddock it is still nominally in your lane and a long way up it -
+       so it would take the whole queue with it, or get dragged back by it. */
+    if (e.leaver && (e.phase === 'leave' || e.phase === 'blink')) return 0;
+    if (e.derelict) return 0;          // parked on the gravel, not in traffic
     if (e.kind === 'oncoming') return -1;
     if (e.kind === 'traffic' || e.kind === 'tailgater') return 1;
     return 0;                          // roos, watchers: not traffic
@@ -2136,6 +2371,8 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     for (var i = 0; i < list.length; i++) {
       var e = list[i];
       if (!e.alive || e.kind !== 'traffic' || e.shunted) continue;
+      // it is not getting out of your way. It has somewhere to be.
+      if (e.leaver) continue;
       if (e.s >= pd) continue;                       // already past you
       // has to be in your line, not merely in your lane
       if (Math.abs(e.x - px) > e.hw + C.CAR_HALF_W + 0.35) continue;
@@ -2275,6 +2512,16 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     var rate = (d > 0 ? 2.2 : 4.0) * dt;
     if (d > rate) return speed + rate;
     if (d < -rate) return speed - rate;
+    return want;
+  }
+
+  /* The same easing without the asymmetry, for the things that are driving
+     rather than obeying a sign: one rate, given per call, so the caller can
+     say how hard this particular car is trying. */
+  function approach(value, want, step) {
+    var d = want - value;
+    if (d > step) return value + step;
+    if (d < -step) return value - step;
     return want;
   }
 
@@ -2801,7 +3048,480 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     return force;
   };
 
+  /* -------------------------------------------------------------- the train
+     A crossing is armed by the train, not by you. The lights come on because
+     something is coming; where you are when that happens is your problem, and
+     that is the only reason the gamble is a gamble. Everything below is in
+     service of the warning being honest - flashing for a fixed number of
+     seconds, the train arriving when it said it would, and no adjustment
+     anywhere for how fast you happen to be going.
+
+     The arithmetic the player is doing, whether or not they know it: the
+     lights give TRAIN_WARN seconds, you are `gap` metres out, so you need to
+     average gap / TRAIN_WARN. At the top of fourth that is about 47 m/s, so
+     anything inside roughly a thousand metres is arguable and anything beyond
+     it is not. The gap is drawn biased long, so most of them are a red
+     light and some of them are a question. */
+
+  /* The next crossing worth putting a train on: active, far enough ahead that
+     the lights can start before you reach it, and not so far that the event
+     would arm and then sit doing nothing for a minute. */
+  Simulation.prototype._trainCrossing = function () {
+    if (this.train.on) return null;
+    var lo = Math.floor(this.dist / CROSSING_SLOT);
+    for (var i = lo; i <= lo + 1; i++) {
+      if (i < 0) continue;
+      var x = crossingInfo(i);
+      if (!x.train && !this.forceTrain) continue;
+      var ahead = x.s - this.dist;
+      if (ahead < C.TRAIN_ARM_MIN + 60) continue;
+      if (ahead > C.TRAIN_ARM_MAX + C.TRAIN_ARM_WINDOW) continue;
+      return x;
+    }
+    return null;
+  };
+
+  Simulation.prototype._startTrain = function () {
+    var x = this._trainCrossing();
+    if (!x) return;
+    var r = this.rng, tr = this.train;
+    tr.on = true;
+    tr.phase = 'armed';
+    tr.t = 0;
+    tr.xing = x;
+    tr.s = x.s;
+    tr.skew = x.skew;
+    tr.dir = r() < 0.5 ? -1 : 1;
+    tr.wagons = C.TRAIN_WAGONS_MIN +
+      Math.floor(r() * (C.TRAIN_WAGONS_MAX - C.TRAIN_WAGONS_MIN + 1));
+    tr.len = C.TRAIN_LOCO_LEN + tr.wagons * C.TRAIN_WAGON_LEN;
+    tr.u = -C.TRAIN_APPROACH;
+    tr.lights = false;
+    tr.warn = C.TRAIN_WARN;
+    tr.horns = 0;
+    tr.hornAt = 0;
+    tr.passedU = null;
+    tr.yelled = false;
+    /* Where you will be when the lights start. Biased towards the far end, so
+       most of them are something you slow down for. */
+    var bias = Math.pow(r(), C.TRAIN_ARM_BIAS);
+    tr.armGap = C.TRAIN_ARM_MIN + bias * (C.TRAIN_ARM_MAX - C.TRAIN_ARM_MIN);
+    /* Already inside it - you were closer than the shortest gap by the time
+       this rolled - so there is nothing to arm. Better a wasted roll than a
+       set of lights that come on with the crossing already under your bonnet.
+
+       Except when the switch is on, where a wasted roll is the one outcome
+       that is no use at all: the gap is shortened to whatever road is left
+       instead. That is a worse warning than the game would ever give you, and
+       it is why this is a testing switch and not a difficulty setting. */
+    if (tr.s - this.dist < tr.armGap) {
+      if (!this.forceTrain) { tr.on = false; tr.phase = 'none'; return; }
+      tr.armGap = Math.max(60, tr.s - this.dist - 20);
+    }
+  };
+
+  Simulation.prototype._updateTrain = function (dt) {
+    var tr = this.train;
+    if (!tr.on) return;
+    tr.t += dt;
+
+    /* Armed and waiting for you to reach the point where the lights start.
+       Measured in road rather than time on purpose: the gap is the thing the
+       player is going to have to judge, so it is the thing that is fixed. */
+    if (tr.phase === 'armed') {
+      if (tr.s - this.dist > tr.armGap) return;
+      tr.phase = 'warn';
+      tr.t = 0;
+      tr.lights = true;
+      this.pushMessage('lights at the crossing', 3.2);
+      this.emit('trainWarn', { gap: tr.s - this.dist });
+      return;
+    }
+
+    if (tr.phase === 'warn') {
+      /* The train is coming whatever you do. Its distance from the road is
+         time-to-arrival times its speed, which is what makes the horn and the
+         headlight tell you the truth about how long you have got. */
+      var left = C.TRAIN_WARN - tr.t;
+      tr.u = -left * C.TRAIN_SPEED;
+      this._trainHorn(dt);
+      if (left <= 0) {
+        tr.phase = 'through';
+        tr.t = 0;
+        tr.u = 0;
+        this.emit('trainThrough', { wagons: tr.wagons });
+      }
+      this._trainStrike();
+      return;
+    }
+
+    if (tr.phase === 'through') {
+      tr.u += C.TRAIN_SPEED * dt;
+      this._trainHorn(dt);
+      this._trainStrike();
+      // clear when the tail is off the far side of the formation
+      if (tr.u - tr.len > C.TRAIN_CLEAR) {
+        tr.phase = 'clear';
+        tr.t = 0;
+        tr.lights = false;
+        this.emit('trainGone', null);
+      }
+      return;
+    }
+
+    // clear: the lights go out, and a moment later so does the event
+    if (tr.t > 2.5 || this.dist > tr.s + 220) {
+      tr.on = false;
+      tr.phase = 'none';
+      tr.lights = false;
+      tr.xing = null;
+    }
+  };
+
+  // Two longs, a short and a long, the way they do it, spaced out as it closes.
+  /* The fastest a vehicle may be going, given the lights.
+
+     Returns null when the crossing is nothing to do with it - no train, too
+     far back to have read the signal, or already past the point where stopping
+     would put it ON the rails. That last one matters more than any of the
+     others: a car that brakes for a signal it has already passed is a car
+     parked in front of a train, and the correct thing for it to do is keep
+     going and get clear. Real drivers do exactly this and it is why the rule
+     is written as "past the line, carry on" rather than as a distance.
+
+     The curve is the ordinary one - the speed you can still stop from in the
+     road you have left - so a car reads the lights a long way out and comes
+     down gently, rather than every vehicle on the road slamming on together at
+     the same distance. */
+  /* What a vehicle should be doing, signs and signals together.
+
+     One decision rather than two. It was written as a cap applied after
+     `approachLimit` had already had its say, which does not work: that call
+     pushes the speed back up towards the limit every frame, so the two of them
+     pulled against each other and the net braking came out at a third of what
+     was asked for. A car reading a signal at two metres per second per second
+     shed about point seven, drifted past the line at twenty-two and drove
+     through the front of a train.
+
+     So the signal is the authority when it applies. Below the cap nothing
+     changes and the car goes on obeying the limit exactly as before. */
+  Simulation.prototype._trafficSpeed = function (e, dt) {
+    var want = this.speedLimitAt(e.s) * e.pace;
+    var cap = this._crossingCap(e);
+    if (cap === null || cap >= want) return approachLimit(e.speed, want, dt);
+    /* The same rate the curve was drawn with, so the car meets it instead of
+       chasing it. Reading it from one place matters: with the two numbers
+       written out separately, changing the feel of the braking in one of them
+       silently turned the curve into something the car could not follow. */
+    var brake = (e.rig ? C.XING_BRAKE_RIG : C.XING_BRAKE) * 1.6;
+    return Math.max(cap, e.speed - brake * dt);
+  };
+
+  Simulation.prototype._crossingCap = function (e) {
+    var tr = this.train;
+    if (!tr.on || !tr.lights) return null;
+    var rig = !!e.rig;
+    var brake = (rig ? C.XING_BRAKE_RIG : C.XING_BRAKE) * 1.6;
+
+    // which way it is travelling, and so which side the rails are approached from
+    var dir = (e.kind === 'oncoming') ? -1 : 1;
+    // road between its nose and the rails, positive while it is still short
+    var toRails = (tr.s - e.s) * dir - (e.hl + C.TRAIN_CORRIDOR);
+    // and before the line it is meant to wait at
+    var left = toRails - C.XING_STOP_BACK;
+
+    if (left > (rig ? C.XING_SEE_RIG : C.XING_SEE)) return null;  // not read yet
+    if (left > 0) return Math.sqrt(2 * brake * left);
+
+    /* Inside the line. Two quite different vehicles end up here and they must
+       not be given the same answer.
+
+       One is stopped at the line and waiting, and the only thing it needs is
+       to be told to stay there. This used to be written as "past the line,
+       carry on" - which is right for the other one and catastrophic for this
+       one: a stopped car sits a hair over the line, floating point drifts it a
+       millimetre further, the rule fires, and it pulls out in front of a train
+       from a standstill.
+
+       The other could not have stopped. It was too close when the lights came
+       on, and braking now would leave it parked ON the rails, which is the
+       worst of the three things it could do. It is committed and it goes.
+
+       The test is whether it could still pull up short of the rails. That is
+       the decision a driver actually makes at a signal, and writing it as the
+       decision rather than as a position is what makes both cases fall out. */
+    var canStop = Math.sqrt(2 * brake * Math.max(0, toRails));
+    if (e.speed > canStop + 0.5) return null;
+    // and once the tail is over the far rail it is nobody's business
+    if (toRails < -(2 * e.hl + C.TRAIN_CORRIDOR)) return null;
+    return 0;
+  };
+
+  Simulation.prototype._trainHorn = function (dt) {
+    var tr = this.train;
+    var out = -tr.u;
+    if (out > C.TRAIN_HORN_AT) return;
+    tr.hornAt -= dt;
+    if (tr.hornAt > 0) return;
+    tr.hornAt = C.TRAIN_HORN_GAP;
+    var n = tr.horns++;
+    this.emit('trainHorn', { index: n, near: clamp(1 - Math.max(0, out) / C.TRAIN_HORN_AT, 0, 1) });
+  };
+
+  /* The corridor, and what is standing in it.
+
+     `pu` is where you are along the train's axis - your lateral position on
+     the road, signed by the direction it is travelling - and the train
+     occupies everything from its tail to its nose. If you are inside that and
+     inside the rails, it is over. There is no damage number here on purpose:
+     a wheat train at eighty does not leave you with a percentage. */
+  Simulation.prototype._trainStrike = function () {
+    var tr = this.train;
+    if (this.over) return;
+
+    if (Math.abs(this.dist - tr.s) > C.TRAIN_CORRIDOR) {
+      /* Off the rails and past them. Whether that was worth saying depends
+         entirely on how close the thing was when you cleared, so the margin
+         is taken at the moment you cross and read afterwards - by the time
+         the train has arrived you are half a kilometre up the road and the
+         mirror is not going to tell you. */
+      if (tr.passedU === null && this.dist > tr.s + C.TRAIN_CORRIDOR) {
+        tr.passedU = tr.u;
+        if (-tr.u < C.TRAIN_NARROW) {
+          this.stats.trainsBeaten = (this.stats.trainsBeaten || 0) + 1;
+          this.pushMessage('you had that by nothing', 3.6);
+          this.emit('trainBeaten', { margin: -tr.u / C.TRAIN_SPEED });
+        }
+      }
+      return;
+    }
+
+    /* Standing on the rails while it is still coming. The lights are behind
+       you by now and the mirrors are no help, so this is the only warning
+       left worth anything. */
+    if (tr.phase === 'warn') {
+      if (!tr.yelled && -tr.u < C.TRAIN_SHOUT) {
+        tr.yelled = true;
+        this.pushMessage('GET OFF THE TRACKS', 3.0, true);
+        this.emit('trainClose', null);
+      }
+      return;
+    }
+
+    var pu = this.x * tr.dir;
+    if (pu > tr.u || pu < tr.u - tr.len) return;
+    this.stats.trainHits = (this.stats.trainHits || 0) + 1;
+    this.shake = 1.6;
+    this.impactFlash = 1;
+    this.emit('trainHit', null);
+    this.die('HIT ON THE CROSSING');
+  };
+
+  /* ------------------------------------------------------- the one that goes
+     It arrives in the mirror, sits there long enough that you look twice, gets
+     past, settles in front of you, indicates, and turns off the road. There is
+     no road. It goes anyway, at a steady angle, out across the stubble, and it
+     is still indicating.
+
+     Nothing else happens. There is no payoff and there is not meant to be one:
+     the whole event is a thing you saw and cannot make anything of. What sells
+     it is that every part of it up to the turn is ordinary - it is a real car
+     with real headlights that you can really crash into, driving the way the
+     traffic drives - so by the time it does the one wrong thing you have long
+     since stopped watching it.
+
+     It runs as traffic rather than a kind of its own so that it gets the paint,
+     the lights, the engine note, the mirrors and the collision for free. The
+     `leaver` flag is what takes it out of the ordinary traffic step. */
+  Simulation.prototype._hasLeaver = function () {
+    for (var i = 0; i < this.entities.length; i++) {
+      if (this.entities[i].alive && this.entities[i].leaver) return true;
+    }
+    return false;
+  };
+
+  Simulation.prototype.spawnLeaver = function () {
+    var r = this.rng;
+    var v = this.pickVehicle();
+    this.entities.push({
+      id: nextId(), kind: 'traffic', alive: true,
+      leaver: true, phase: 'follow', t: 0,
+      s: this.dist - C.LEAVER_BEHIND,
+      x: this.ownLaneCentre(),
+      speed: Math.max(18, this.speed),
+      dir: 1, pace: 1,
+      hw: this.vehicleHalfW(v), hl: this.vehicleHalfL(v),
+      model: v, tint: 0,
+      // it never counts as one you overtook, because you never overtake it
+      passed: true, reversed: false,
+      yaw: 0, blink: 0, indicating: false,
+      hold: C.LEAVER_HOLD_MIN + r() * (C.LEAVER_HOLD_MAX - C.LEAVER_HOLD_MIN),
+      // which way it leaves: the side of the road you do not drive on, so it
+      // crosses in front of you and you watch it go
+      side: -this.nearSide()
+    });
+    this.emit('leaver', null);
+  };
+
+  Simulation.prototype._runLeaver = function (e, dt, pd) {
+    e.t += dt;
+    // the indicator keeps its own clock so it does not stall with the phases
+    if (e.indicating) e.blink += dt;
+
+    var own = this.ownLaneCentre();
+    var other = this.oncomingLaneCentre();
+    var gap = e.s - pd;                        // negative while it is behind
+
+    if (e.phase === 'follow') {
+      /* Holding station. Slightly quicker than you so it closes, but only
+         slightly - the point is that it is there for long enough to stop being
+         interesting. */
+      e.speed = approach(e.speed, Math.max(12, this.speed + 1.4), 5.0 * dt);
+      e.s += e.speed * dt;
+      e.x += (own - e.x) * Math.min(1, dt * 1.6);
+      if (e.t > e.hold && gap > -55) { e.phase = 'pass'; e.t = 0; }
+      return;
+    }
+
+    if (e.phase === 'pass') {
+      /* Out and past. It will out-run you to do it, which is the only way a
+         car gets past a car that is already flat out, and it is what makes the
+         pass read as deliberate rather than as traffic drifting by. */
+      e.speed = approach(e.speed, Math.max(16, this.speed + C.LEAVER_OVER), 6.5 * dt);
+      e.s += e.speed * dt;
+      e.x += (other - e.x) * Math.min(1, dt * 1.8);
+      if (gap > C.LEAVER_LEAD) { e.phase = 'tuck'; e.t = 0; }
+      return;
+    }
+
+    if (e.phase === 'tuck') {
+      // back into the lane and off the throttle, matching you
+      e.speed = approach(e.speed, Math.max(12, this.speed), 4.0 * dt);
+      e.s += e.speed * dt;
+      e.x += (own - e.x) * Math.min(1, dt * 1.6);
+      if (Math.abs(e.x - own) < 0.25 && e.t > C.LEAVER_LEAD_HOLD) {
+        e.phase = 'blink';
+        e.t = 0;
+        e.indicating = true;
+        e.blink = 0;
+        this.emit('leaverBlink', { side: e.side });
+      }
+      return;
+    }
+
+    if (e.phase === 'blink') {
+      /* Slowing for a turn, indicating for a turn. Everything about this is
+         correct except that there is nothing to turn into, and you have no way
+         of knowing that until it does not stop. */
+      e.speed = approach(e.speed, C.LEAVER_TURN_SPEED, 5.5 * dt);
+      e.s += e.speed * dt;
+      e.x += (own - e.x) * Math.min(1, dt * 1.2);
+      if (e.t > C.LEAVER_BLINK_HOLD) {
+        e.phase = 'leave';
+        e.t = 0;
+        e.x0 = e.x;
+        /* Turned here rather than left for the next frame's leave step. It was
+           set at the bottom of that step, so for exactly one frame the car was
+           in the leave phase and still pointing straight down the road - one
+           frame of a car sliding sideways, which is the kind of thing you see
+           without being able to say what you saw. */
+        e.yaw = -e.side * C.LEAVER_ANGLE;
+        /* It stops being solid the moment it leaves the road. A car you can
+           crash into out in the paddock is a puzzle - you would go looking for
+           the track it turned onto - and this is not a puzzle. */
+        e.hw = 0;
+        e.hl = 0;
+        this.emit('leaverGo', { side: e.side });
+      }
+      return;
+    }
+
+    // leave: a constant angle, held, for as long as you can still see it
+    var ang = C.LEAVER_ANGLE;
+    e.speed = approach(e.speed, C.LEAVER_TURN_SPEED, 3.0 * dt);
+    e.s += e.speed * Math.cos(ang) * dt;
+    e.x += e.side * e.speed * Math.sin(ang) * dt;
+    e.yaw = -e.side * ang;
+    if (Math.abs(e.x - e.x0) > C.LEAVER_GONE) {
+      e.alive = false;
+      this.emit('leaverGone', null);
+    }
+  };
+
+  /* ------------------------------------------------------------ the lights
+     Five things, all of them going under the one name because they are the one
+     name: a light out there that does not behave. The scheduler owns a single
+     slot for the lot, so seeing a pacer means you are not also getting an
+     abduction three hundred metres later - which is the point. One at a time,
+     rarely, and never twice running.
+
+     The weights are what they are because they are not equal in what they cost
+     you. The paddock lift is the set piece and it is what people come back
+     for, so it stays the common one. The blackout takes your headlights away
+     at a hundred and forty and is the only one of the five that can end a run,
+     so it is the rare one. */
+  /* Three of them, not five.
+
+     The clock jumping and the electrics failing were in here too, and putting
+     them in the queue was the mistake. The queue exists so that two things you
+     are meant to LOOK at never land on top of each other - that is what it is
+     for and it says so where it is declared. Missing time is not something you
+     look at. Neither is a blackout. They are things that happen TO you, and
+     they need no room on the horizon and nothing to be clear of.
+
+     Sharing the slot cost them everything. Measured over a thousand kilometres
+     of ordinary driving, the blackout came up once: nine parts in a hundred of
+     a slot that six events were already queueing for. Rare had stopped meaning
+     rare and started meaning absent. They run on their own counters now, the
+     same as the kangaroos and the road trains do, and compete with nobody. */
+  var UFO_KINDS = [
+    { name: 'lift',   weight: 42 },   // the paddock, the beam, the burnt ring
+    { name: 'pacer',  weight: 34 },   // holds station off your shoulder
+    /* Weighted well above the other two because it is the only one of the
+       three that needs somewhere particular to happen - a rest area, ahead of
+       you, near enough to reach. That is true of well under half the road, and
+       a variant that is skipped whenever it cannot happen needs the weight
+       back when it can. At 24 it measured one every two hundred kilometres. */
+    { name: 'bay',    weight: 44 }    // a car in the rest area, nobody in it
+  ];
+
+  Simulation.prototype._pickUfoKind = function () {
+    /* The bay needs a rest area to put a car in and the blackout needs road
+       left to get through, so a variant that cannot happen here is dropped
+       rather than rolled and wasted. */
+    var total = 0, pick = null;
+    for (var i = 0; i < UFO_KINDS.length; i++) {
+      var k = UFO_KINDS[i];
+      if (k.name === 'bay' && this._ufoBayAhead() === null) continue;
+      total += k.weight;
+      if (this.rng() * total < k.weight) pick = k.name;
+    }
+    return pick || 'lift';
+  };
+
+  // the next rest area far enough ahead to put something in before you get there
+  Simulation.prototype._ufoBayAhead = function () {
+    var lo = Math.floor(this.dist / REST_SLOT);
+    for (var i = lo; i <= lo + 2; i++) {
+      if (i < 0) continue;
+      var b = restAreaInfo(i);
+      var ahead = b.s - this.dist;
+      /* Wide, because rest areas are nine and a half kilometres apart and a
+         narrow window means the variant is almost never available to be drawn.
+         The far end only has to be a distance you will actually cover. */
+      if (ahead > 300 && ahead < 9000) return b;
+    }
+    return null;
+  };
+
   Simulation.prototype.spawnUfo = function () {
+    var kind = this._pickUfoKind();
+    if (kind === 'pacer') return this._spawnPacer();
+    if (kind === 'bay') return this._spawnBay();
+    return this._spawnLift();
+  };
+
+  Simulation.prototype._spawnLift = function () {
     var r = this.rng;
     var side = r() < 0.5 ? -1 : 1;
     this.entities.push({
@@ -2818,6 +3538,152 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     this.emit('ufo', null);
   };
 
+  /* ---- the pacer ----------------------------------------------------------
+     A light off your shoulder, holding station. Slow down and it slows. Speed
+     up and it keeps up. It does that for a kilometre and then it is not there,
+     and there is no moment at which it left.
+
+     It is the same entity the lift uses, so it draws itself, and the only
+     thing that makes it a different event is that its position is defined
+     relative to you rather than to the road. That is also the entire horror
+     of it: everything else out here goes past. */
+  Simulation.prototype._spawnPacer = function () {
+    var r = this.rng;
+    this.entities.push({
+      id: nextId(), kind: 'ufo', alive: true,
+      variant: 'pacer',
+      s: this.dist + C.PACE_AHEAD,
+      x: (r() < 0.5 ? -1 : 1) * (C.PACE_OFF_MIN + r() * (C.PACE_OFF_MAX - C.PACE_OFF_MIN)),
+      hw: 0, hl: 0,
+      phase: 'pace', t: 0,
+      y: C.PACE_HIGH_MIN + r() * (C.PACE_HIGH_MAX - C.PACE_HIGH_MIN),
+      beam: 0, lift: 0, spin: r() * 6.2832,
+      hold: C.PACE_HOLD_MIN + r() * (C.PACE_HOLD_MAX - C.PACE_HOLD_MIN),
+      // where it wants to sit relative to you, held for the whole show
+      lead: C.PACE_AHEAD,
+      seen: false, told: false
+    });
+    this.emit('ufo', null);
+  };
+
+  /* ---- the one in the rest area -------------------------------------------
+     A car in the bay with its lights on and its engine running, and nobody in
+     it and nobody near it. You pass it at a hundred and forty. That is all
+     there is; there is nothing to find and nowhere to look.
+
+     It is ordinary traffic geometry parked on the gravel, which is what makes
+     it work - it is not a spooky asset, it is a Commodore. */
+  Simulation.prototype._spawnBay = function () {
+    var bay = this._ufoBayAhead();
+    if (!bay) return;
+    var r = this.rng;
+    var v = this.pickVehicle();
+    this.entities.push({
+      id: nextId(), kind: 'traffic', alive: true,
+      derelict: true,
+      s: bay.s + (r() - 0.5) * (C.REST_LANE * 0.5),
+      x: bay.side * (C.SHOULDER_HALF + 2.6 + r() * 1.4),
+      speed: 0, dir: 1, pace: 1,
+      hw: this.vehicleHalfW(v), hl: this.vehicleHalfL(v),
+      model: v, tint: 0, passed: true, reversed: false,
+      shunted: false, seen: false
+    });
+    this.emit('ufo', null);
+  };
+
+  /* ---- missing time -------------------------------------------------------
+     The clock is the only thing in the car that is keeping score, so it is the
+     only thing worth breaking. Nothing else changes: same road, same fuel,
+     same odometer. You have just been driving for nine minutes longer than you
+     were driving for a moment ago.
+
+     The odometer is deliberately left alone. Time going missing while the
+     distance stays honest is the version you cannot argue yourself out of -
+     if the road had moved too you would simply have lost concentration. */
+  Simulation.prototype._startSkip = function () {
+    var r = this.rng;
+    var jump = C.SKIP_MIN + r() * (C.SKIP_MAX - C.SKIP_MIN);
+    this.t += jump;
+    this.stats.timeAlive += jump;
+    this.skipped = (this.skipped || 0) + jump;
+    this.stats.skipped = this.skipped;
+    this.dreadFlash = 1;
+    this.pushMessage('the clock is wrong', 4.4);
+    this.emit('skip', { seconds: jump });
+  };
+
+  /* ---- the blackout -------------------------------------------------------
+     Everything electrical stops. Headlights, dash, radio, the lot - and you
+     are still doing whatever you were doing, in the dark, on a road you can no
+     longer see. It comes back on its own with the radio on a station that was
+     not in the list.
+
+     This is the only one of the five that can end a run, so it is the rare one
+     and it is short. Four seconds at a hundred and forty is two hundred metres
+     of road you are driving from memory, which is a long way further than it
+     sounds and quite long enough. */
+  Simulation.prototype._startDark = function () {
+    var r = this.rng;
+    this.carDark = C.DARK_SECONDS_MIN + r() * (C.DARK_SECONDS_MAX - C.DARK_SECONDS_MIN);
+    this.carDarkTotal = this.carDark;
+    this.stats.blackouts = (this.stats.blackouts || 0) + 1;
+    this.emit('carDark', { seconds: this.carDark });
+  };
+
+  /* Not set pieces, and putting them in the queue with them was the mistake.
+
+     Driven by distance like the traffic, and wound forward on the clock while
+     you are parked for the same reason everything else is - sitting on the
+     verge should not put the night on hold. `oddMode` reaches them because
+     they are odd things; the Open Road switch does not, because neither of
+     them is on the road. */
+  Simulation.prototype._updateOddments = function (dt, moved) {
+    if (this.oddMode === 'off') return;
+    var step = (this.stoppedFor > C.PARKED_AFTER)
+      ? Math.max(moved, C.PARKED_KM_PER_S * 1000 * dt) : moved;
+    var often = this.oddMode === 'often' ? 0.10 : 1;
+    var r = this.rng;
+
+    this.nextSkip -= step;
+    if (this.nextSkip <= 0) {
+      this.nextSkip = (C.SKIP_EVERY_MIN +
+        r() * (C.SKIP_EVERY_MAX - C.SKIP_EVERY_MIN)) * often;
+      this._startSkip();
+    }
+
+    this.nextDark -= step;
+    if (this.nextDark <= 0) {
+      /* Not while there is a train coming. Taking the headlights off a car
+         that is trying to judge a level crossing is not a hard moment, it is
+         an unwinnable one - and the crossing is already the one place in the
+         game where a mistake costs the whole run. It waits for the road. */
+      if (this.train.on && this.train.phase !== 'armed') return;
+      this.nextDark = (C.DARK_EVERY_MIN +
+        r() * (C.DARK_EVERY_MAX - C.DARK_EVERY_MIN)) * often;
+      this._startDark();
+    }
+  };
+
+  Simulation.prototype._updateDark = function (dt) {
+    if (!this.carDark) return;
+    this.carDark = Math.max(0, this.carDark - dt);
+    if (this.carDark > 0) return;
+    this.carDark = 0;
+    /* And it comes back with the radio on. The burst is what you actually
+       notice - the dash lighting up is expected by then, the noise is not. */
+    this.radioBurst = 2.6;
+    this.pushMessage('everything comes back on', 3.4);
+    this.emit('carLight', null);
+  };
+
+  // 0 while the car is working, 1 the instant it stops, easing back at the end
+  Simulation.prototype.darkness = function () {
+    if (!this.carDark) return 0;
+    // the last third of it is the power coming back, not a switch
+    var back = this.carDark / Math.max(0.001, this.carDarkTotal * 0.34);
+    return clamp(back, 0, 1);
+  };
+
   /* The whole thing, on a clock. Nothing here reacts to the player at all -
      it does not wait for you, it does not notice you, and if you were looking
      the other way you missed it. That indifference is most of what makes it
@@ -2825,6 +3691,37 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
   Simulation.prototype._runUfo = function (e, dt, pd) {
     e.t += dt;
     e.spin += dt * (e.phase === 'leave' ? 9.0 : 1.4);
+
+    /* The pacer. It matches you rather than sitting on the road, so it never
+       gets seen at twelve hundred metres and never announces itself the way
+       the lift does - the whole thing depends on you working out for yourself
+       that it has not gone past. */
+    if (e.phase === 'pace') {
+      /* Chased rather than pinned. Pinning it to `dist + lead` would put it in
+         exactly the same pixel every frame, which reads as a bug in the sky;
+         easing towards the station gives it the slight lag and overshoot of
+         something flying, and it still holds. */
+      var want = pd + e.lead;
+      e.s += (want - e.s) * Math.min(1, dt * C.PACE_LAG);
+      e.beam = 0;
+      if (!e.told && e.t > C.PACE_TOLD_AT) {
+        e.told = true;
+        e.seen = true;
+        this.stats.ufoSeen = (this.stats.ufoSeen || 0) + 1;
+        this.pushMessage('it is keeping up', 4.2);
+        this.emit('ufoSeen', null);
+      }
+      if (e.t > e.hold) {
+        /* Not a departure. There is no moment at which it leaves, which is
+           why it is not allowed an animation: one frame it is there and the
+           next one it is not, and you spend the next minute checking. */
+        e.alive = false;
+        this.dreadFlash = 1;
+        this.pushMessage('and then it was not', 3.4);
+        this.emit('ufoGone', null);
+      }
+      return;
+    }
 
     if (!e.seen && Math.abs(e.s - pd) < 1200) {
       e.seen = true;
@@ -3157,12 +4054,18 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
      to this list does not require re-deriving anybody else's numbers.
 
      `gap` is how much road before this same event may happen again. `busy`
-     stops a second one starting while the first is still running. */
+     stops a second one starting while the first is still running.
+
+     `offRoad` is what survives Open Road mode. It used to be called `sky`,
+     which was true of everything that had it until a train turned up: a train
+     is not in the sky and it is not on the road either, it is on its own line,
+     and emptying the road of traffic is no reason for the railway to stop
+     running. The flag means what the check does - this event is not traffic. */
   function setPieces() {
     return [
       {
         name: 'aurora', weight: 4, minDist: C.AURORA_MIN_DIST, gap: 2600,
-        sky: true,          // weather, not traffic: an empty road still has one
+        offRoad: true,      // weather, not traffic: an empty road still has one
         off: function (s) { return s.auroraMode === 'off'; },
         busy: function (s) { return s.aurora.on; },
         rate: function (s) {
@@ -3175,7 +4078,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
         /* Cheap, quick and harmless, so it carries the most weight: it is the
            one that can happen often without wearing out. */
         name: 'fireball', weight: 8, minDist: C.FIREBALL_MIN_DIST, gap: 1400,
-        sky: true,
+        offRoad: true,
         off: function (s) { return s.oddMode === 'off'; },
         /* Busy means there is something to look at. A fireball stays `on` for
            up to twenty seconds after the light has gone, waiting to deliver
@@ -3197,7 +4100,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
            is on the road nothing else gets a turn, which is correct: you have
            enough to think about. */
         name: 'wide', weight: 5, minDist: C.WIDE_MIN_DIST, gap: 4200,
-        sky: false,
+        offRoad: false,
         off: function (s) { return false; },
         /* Busy only once it is near. A convoy is spawned the better part of a
            kilometre and a half out and takes the better part of a minute to
@@ -3218,7 +4121,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       },
       {
         name: 'ufo', weight: 3, minDist: C.UFO_MIN_DIST, gap: 3200,
-        sky: false,         // it puts a thing in a paddock, so an empty road has none
+        offRoad: false,     // it puts a thing in a paddock, so an empty road has none
         off: function (s) { return s.oddMode === 'off'; },
         busy: function (s) { return s._hasKind('ufo'); },
         rate: function (s) {
@@ -3226,6 +4129,64 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
             ? C.OFTEN_RATE : s._eventChance(C.UFO_CHANCE_KM);
         },
         start: function (s) { s.spawnUfo(); }
+      },
+      {
+        /* The train. It runs on its own line, so an emptied road does not stop
+           it - Open Road is about there being no traffic, and the railway is
+           not traffic.
+
+           `off` is doing real work here rather than reading a switch: a train
+           needs an active crossing at a workable distance ahead, and there is
+           not always one. Checking it here rather than inside `start` means a
+           roll that could not have gone anywhere is not spent. */
+        name: 'train', weight: 6, minDist: C.TRAIN_MIN_DIST, gap: 5200,
+        offRoad: true,
+        off: function (s) { return s._trainCrossing() === null; },
+        /* Busy only once the lights are on. A train is armed as much as two
+           kilometres before it does anything, and treating the whole of that
+           as an event in progress locked the queue for the length of it -
+           which is the wide load's bug, in the wide load's words, and it cost
+           the same thing: in preview, where events are meant to come thick and
+           fast, a quarter of the runs stopped seeing an aurora at all.
+
+           Nothing can double up on it, because `off` above is false for as
+           long as one is armed - `_trainCrossing` will not offer a second. */
+        busy: function (s) { return s.train.on && s.train.phase !== 'armed'; },
+        /* Not routed through _eventChance. The crossings do the rationing -
+           there is one every forty kilometres or so and no more - so a preview
+           multiplier on top of that would only make the same train arm a few
+           hundred metres earlier. */
+        rate: function () { return C.TRAIN_RATE; },
+        start: function (s) { s._startTrain(); }
+      },
+      {
+        /* The one that turns off. It is a car, so an emptied road does not
+           have it. */
+        name: 'leaver', weight: 5, minDist: C.LEAVER_MIN_DIST, gap: 4600,
+        offRoad: false,
+        // one at a time, which is what this guarantees now that `busy` no
+        // longer does
+        off: function (s) { return s._hasLeaver(); },
+        /* Busy only while it is doing the thing.
+
+           It lives the better part of seventy seconds, and most of that is
+           either sitting in your mirror or receding into a paddock - neither
+           of which needs the road to itself. Holding the queue for all of it
+           meant one car took the better part of two kilometres of road out of
+           circulation, and measured in preview it was holding the queue fifty
+           eight percent of the time: more than every other event in the game
+           put together. The pass and the turn are the event. The waiting is
+           the point of the waiting. */
+        busy: function (s) {
+          for (var i = 0; i < s.entities.length; i++) {
+            var e = s.entities[i];
+            if (!e.alive || !e.leaver) continue;
+            if (e.phase === 'pass' || e.phase === 'tuck' || e.phase === 'blink') return true;
+          }
+          return false;
+        },
+        rate: function (s) { return s._eventChance(C.LEAVER_CHANCE_KM); },
+        start: function (s) { s.spawnLeaver(); }
       }
     ];
   }
@@ -3473,6 +4434,18 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     var hurry = this.preview || this.auroraMode === 'often' || this.oddMode === 'often';
     var cool = hurry ? C.EVENT_COOLDOWN_PREVIEW : C.EVENT_COOLDOWN;
 
+    /* The testing switch goes first and ignores everything below it. Waiting
+       for the queue is exactly what you do not want when you have opened the
+       page to look at a train: the first crossing comes up at four kilometres,
+       and if a wide load happens to be on the road at that moment you drive
+       past it and wait another thirteen. */
+    if (this.forceTrain && !this.train.on && this._trainCrossing()) {
+      this.eventAt.train = this.dist;
+      this.eventQuietSince = this.dist;
+      this._startTrain();
+      return;
+    }
+
     // is anything already running, and has the road settled since the last one
     for (var b = 0; b < pieces.length; b++) {
       if (pieces[b].busy(this)) { this.eventQuietSince = this.dist; return; }
@@ -3493,7 +4466,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       /* `noSpawn` empties the road - it is what Open Road mode is - and the
          aurora is not on the road. Gating the whole scheduler on it turned
          the sky off along with the traffic. */
-      if (this.noSpawn && !p.sky) continue;
+      if (this.noSpawn && !p.offRoad) continue;
       if (!this._eventReady(p.minDist)) continue;
       var last = this.eventAt[p.name];
       if (last !== undefined && this.dist - last < (hurry ? p.gap * 0.12 : p.gap)) continue;
@@ -3605,6 +4578,8 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       this._updateWeather(dt);
       this._updateAurora(dt);
       this._updateFireball(dt);
+      // the train does not stop because you did
+      this._updateTrain(dt);
       this.shake *= Math.pow(0.06, dt);
       this._updateEntities(dt, true);
       return;
@@ -3777,6 +4752,9 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     this._updateFireball(dt);
     this._updateRoadTrains(dt, moved);
     this._updateCopStops(dt, moved);
+    this._updateTrain(dt);
+    this._updateDark(dt);
+    this._updateOddments(dt, moved);
     this.wheelSpin += moved / 0.3316;
 
     /* ---- fuel */
@@ -3952,7 +4930,23 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       switch (e.kind) {
         case 'traffic':
           if (e.shunted) { this._driftWreck(e, dt); break; }
-          e.speed = approachLimit(e.speed, this.speedLimitAt(e.s) * e.pace, dt);
+          /* Not driving to the signs. It has somewhere it is going, and where
+             that is is the event. */
+          if (e.leaver) { this._runLeaver(e, dt, pd); break; }
+          /* Parked in the bay with the engine running and nobody in it. It
+             does not move, it does not yield, and it never counts as one you
+             overtook - the whole event is that it is exactly where it was. */
+          if (e.derelict) {
+            e.speed = 0;
+            if (!e.seen && Math.abs(e.s - pd) < 120) {
+              e.seen = true;
+              this.stats.ufoSeen = (this.stats.ufoSeen || 0) + 1;
+              this.pushMessage('doors open. engine running.', 4.2);
+              this.emit('derelict', null);
+            }
+            break;
+          }
+          e.speed = this._trafficSpeed(e, dt);
           e.s += e.speed * dt;
           if (!e.passed && e.s < pd - 2) {
             e.passed = true;
@@ -3971,7 +4965,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
           break;
         case 'oncoming':
           if (e.shunted) { this._driftWreck(e, dt); break; }
-          e.speed = approachLimit(e.speed, this.speedLimitAt(e.s) * e.pace, dt);
+          e.speed = this._trafficSpeed(e, dt);
           e.s -= e.speed * dt;
           if (!e.passed && e.s < pd) {
             e.passed = true;
@@ -4153,8 +5147,20 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
          decide where you are going to be - which put it beyond the ordinary
          cull, so it was deleted on the frame it was created and sat frozen a
          kilometre up the road for the rest of the run. */
-      if (e.alive && (e.kind === 'ufo' || e.kind === 'scorch' ||
+      /* The car in the bay is put a long way up the road so that it is there
+         before you are, and the ordinary cull throws away anything past
+         ONCOMING_AHEAD - so it was deleted on the frame it was created and the
+         event silently never happened. Exactly the wide load's bug, in exactly
+         the same place, which is a good argument for this list being the one
+         place that decides. */
+      if (e.alive && (e.kind === 'ufo' || e.kind === 'scorch' || e.derelict ||
                       (e.rig && e.rig.wide) || e.pilot)) { keep.push(e); continue; }
+
+      /* It sits in the mirror for up to twenty-four seconds before it does
+         anything, which is well outside the window the traffic cull uses -
+         so the ordinary rule deleted it before it had a chance to be an
+         event. It keeps itself until it has gone, the same as a pursuit. */
+      if (e.alive && e.leaver) { keep.push(e); continue; }
 
       var chasing = e.kind === 'police' &&
         (e.state === 'chasing' || e.state === 'booking' || e.state === 'pullover');
@@ -4265,12 +5271,19 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
           : TREE_NEAR + hash1(i, salt + 3) * TREE_BAND;
         /* In an avenue they stand right on the verge and they are big. This
            is the whole effect: the trunks come close enough that your lights
-           rake along them instead of reaching past into a paddock. */
-        /* Close, but past the verge you can actually drive on. Pulled right
-           in to VERGE_MAX they were arriving in the windscreen as a wall -
-           correct for a canopy and useless for a road you have to see down. */
+           rake along them instead of reaching past into a paddock.
+
+           `off` is measured from the EDGE of the tarmac, because that is how
+           it is placed - the renderer draws at TARMAC_HALF + off. VERGE_MAX is
+           measured from the middle of the road, because it is a limit on where
+           the car may be. Mixing the two put every avenue tree 3.6 m further
+           out than it was meant to be: the nearest trunk stood at 15.3 m from
+           the centre line when the intention was 11.7, which is further out
+           than an ordinary bush on open road manages. The avenue was pushing
+           trees away from the road instead of pulling them in. */
         if (av > 0) {
-          off = lerp(off, C.VERGE_MAX + 1.4 + hash1(i, salt + 3) * 4.0, av);
+          var vergeOff = C.VERGE_MAX - C.TARMAC_HALF;   // the same space as `off`
+          off = lerp(off, vergeOff + 0.6 + hash1(i, salt + 3) * 3.2, av);
         }
 
         var t = p.take();
@@ -4281,10 +5294,41 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
         t.scale = 0.70 + hash1(i, salt + 5) * 0.65;
         t.rot = hash1(i, salt + 6) * 6.2832;
         t.lean = (hash1(i, salt + 7) - 0.5) * 0.10;
+        t.tilt = 0;
         if (av > 0) {
-          // taller, and leaning out over the road the way an old one does
-          t.scale *= 1 + av * 0.30;
-          t.lean = lerp(t.lean, -t.side * (0.10 + hash1(i, salt + 8) * 0.13), av);
+          /* Taller, and leaning out over the road the way an old one does.
+
+             Both numbers are doing geometry rather than taste. A trunk on the
+             verge is 11.7 m from the centre line and a lane is 3.6 m wide, so
+             for a canopy to be over the road at all it has to reach eight
+             metres sideways - and it reaches by leaning, because the crown
+             sits seven metres up and a lean tips it by height times its sine.
+             At the old ten to thirteen degrees that was three metres and the
+             canopy stopped short of the gravel, which is why an avenue read as
+             "more trees, slightly closer" rather than as anything closing over
+             the top of you.
+
+             The verge here is unusually wide - you can pull over anywhere, so
+             VERGE_MAX is 10.3 from the centre line and no tree may stand
+             inside it. That is a long way for a crown to travel, and it is why
+             the lean has to be this pronounced: seventeen to thirty-two
+             degrees on a crown twelve metres up carries it about six metres,
+             which is what finally puts leaves over the tarmac rather than over
+             the gravel. It is also what an old roadside gum on that country
+             actually does, so the number that works and the number that is
+             true turn out to be the same one. */
+          t.scale *= 1 + av * 0.45;
+          /* Leaned ACROSS the road, which is a different axis from the one
+             `lean` uses. `lean` is a small random tilt for variety and it
+             tips a tree along the road, because that is what a rotation about
+             X does; the avenue needs the crown carried sideways, over the
+             tarmac, and that is a rotation about Z.
+
+             They were the same field. So every extra degree of "leaning out
+             over the road" was tipping the tree up or down the road instead,
+             and the canopy never came any closer no matter how far it was
+             pushed - which is exactly what it looked like. */
+          t.tilt = t.side * lerp(0, 0.30 + hash1(i, salt + 8) * 0.22, av);
         }
         t.avenue = av;
       }
@@ -4526,11 +5570,11 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
   Simulation.prototype.visibleCrossings = function () {
     var out = [];
     var first = Math.floor((this.dist - C.VIEW_BEHIND) / CROSSING_SLOT);
-    var last = Math.ceil((this.dist + C.VIEW_AHEAD) / CROSSING_SLOT);
+    var last = Math.ceil((this.dist + C.CROSSING_AHEAD) / CROSSING_SLOT);
     for (var i = first; i <= last; i++) {
       if (i < 0) continue;
       var x = crossingInfo(i);
-      if (x.s < this.dist - C.VIEW_BEHIND || x.s > this.dist + C.VIEW_AHEAD) continue;
+      if (x.s < this.dist - C.VIEW_BEHIND || x.s > this.dist + C.CROSSING_AHEAD) continue;
       x.side = railSide(x.s);
       out.push(x);
     }
@@ -4732,6 +5776,13 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     SIGN_TEXTS: SIGN_TEXTS,
     MILESTONE_LINES: MILESTONE_LINES,
     Simulation: Simulation,
+    /* The set-piece table, for the tests. They used to restate the queue's
+       rules in their own terms - which meant the assertions and the code could
+       drift apart, and did, the moment two more events joined the queue. Handed
+       out instead so a test can read the real gaps and call the real `busy`
+       predicates. It builds a fresh table each call and holds no state, so
+       there is nothing here for a caller to break. */
+    setPieces: setPieces,
     LAMP_PRESETS: LAMP_PRESETS,
     townName: townName,
     townInfo: townInfo,
@@ -5301,8 +6352,26 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
        band comes down as well: what you hear coming is not the engine, it is
        eighty-odd tyres on coarse chip seal, and that arrives a long way before
        anything else does. */
-    roadtrain: { base: 10, tyre: 235, level: 2.15 }
+    roadtrain: { base: 10, tyre: 235, level: 2.15 },
+    /* A highway patrol car is a big sedan being driven hard, so it sits a
+       little below a hatchback and a good way above it in level. It gets an
+       entry of its own because for the whole of a pursuit it is the vehicle
+       nearest to you, and borrowing the generic car tone made the thing in
+       your mirror sound like the thing you had just overtaken. */
+    police: { base: 24, tyre: 500, level: 1.30 }
   };
+
+  /* ---- the siren, as numbers ----------------------------------------------
+     Two tones a fifth apart with a shared slow sweep. Kept up here because the
+     Doppler has to scale the sweep depths by exactly what it scales the notes
+     by, and that only works if both are read from the same place. */
+  var SIREN_A = 620;                       // the lower oscillator, Hz
+  var SIREN_B = 930;                       // the upper, a fifth above it
+  var SIREN_A_SWEEP = 210;                 // how far each one is swept
+  var SIREN_B_SWEEP = 315;
+  var SIREN_HORN = 1250;                   // where the horn's own resonance is
+  var SIREN_LEVEL = 0.20;                  // level at the bumper
+  var SIREN_RANGE = 520;                   // metres, past which there is none
 
   function clampNum(v, a, b) { return v < a ? a : (v > b ? b : v); }
 
@@ -5873,7 +6942,9 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     this.tuneGain.connect(this.bus);
     // how much the stations are held down while it sweeps
     this.tuneDuck = 1;
+    this.carDark = 0;
     this._buildSiren();
+    this._buildTrain();
 
     this.droneGain = ctx.createGain();
     this.droneGain.gain.value = 0.0001;
@@ -6190,6 +7261,12 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
   Audio.prototype.update = function (st) {
     if (!this.ready) return;
     var ctx = this.ctx;
+    /* Everything on the car's own loom, when the loom stops. The engine is not
+       on it - a car with no electrics is still a car with an engine turning,
+       and hearing it keep running under the silence is what tells you the
+       thing that has failed is not mechanical. What goes is the radio, which
+       is the only sound in the game you had chosen to have. */
+    this.carDark = clampNum(st.dark === undefined ? 0 : st.dark, 0, 1);
     var rpm = st.rpmNorm;
     var base = 42 + rpm * 118;
 
@@ -6289,6 +7366,10 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     // anything arriving over the air fades with the signal; your own music
     // does not, because it is not arriving over anything
     if (overAir) wantRadio *= 0.45 + 0.55 * this.reception;
+    // and there is no radio at all with no power to it
+    var lit = 1 - (this.carDark || 0);
+    wantRadio *= lit;
+    wantStatic *= lit;
     ramp(this.staticGain.gain, wantStatic, ctx, 0.15);
     ramp(this.droneGain.gain, wantDrone, ctx, 0.4);
     ramp(this.radioGain.gain, wantRadio, ctx, 0.2);
@@ -6468,6 +7549,8 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       // the tuning duck, which for a stream has to be applied to the element
       // itself because there is no node in the graph to do it with
       rv *= (this.tuneDuck === undefined ? 1 : this.tuneDuck);
+      // a stream has no node to duck, so the blackout is applied here too
+      rv *= 1 - (this.carDark || 0);
       // and the same signal fade, which for a stream has to be applied here
       rv *= 0.45 + 0.55 * (this.reception === undefined ? 1 : this.reception);
       this.streamEl.volume = onStream ? Math.max(0, rv) : 0;
@@ -6682,27 +7765,55 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
      work is hearing it arrive - a siren that switches on at fifty metres tells
      you nothing you did not already know from the mirror.
 
-     Two oscillators a fifth apart with a shared slow sweep, through a bandpass
-     that gives it the horn's honk, and a touch of Doppler off the closing
-     rate. */
+     It is a source on the road, not a level on a fader. It used to be handed
+     an already-computed loudness and a pitch multiplier, which left it sitting
+     dead centre whatever lane the car was in and shifted only the horn's
+     resonance rather than the note itself - so a pursuit was a noise that got
+     louder, and nothing about it told you where they were. It gets the same
+     three numbers every other vehicle on the road gets now, and works out the
+     rest here alongside the physics that does it for them.
+
+     The chain: two oscillators a fifth apart with a shared slow sweep, through
+     a bandpass for the horn's honk, a low-pass carrying distance and which
+     side of you they are on, and a panner. */
   Audio.prototype._buildSiren = function () {
     var ctx = this.ctx;
     this.sirenGain = ctx.createGain();
     this.sirenGain.gain.value = 0.0001;
+    this.sirenGain.connect(this.bus);
+
+    /* dx over distance is the sine of the bearing, so this swings hard across
+       the stereo field exactly as they come alongside. Held short of the hard
+       edges for the same reason the traffic voices are: a full pan puts the
+       whole of it into one channel, which on a phone speaker is the difference
+       between a car beside you and silence. */
+    this.sirenPan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+    if (this.sirenPan) this.sirenPan.connect(this.sirenGain);
+
+    /* Stereo cannot tell you front from back, and for most of a pursuit they
+       are directly astern - which is the one bearing a panner has nothing to
+       say about. The low-pass says it instead: from behind, the sound reaches
+       you through the back glass and the headrests and arrives dull, and it
+       brightens as they draw alongside. Distance closes it further, because
+       air takes the top off long before it takes the level off. */
+    this.sirenLp = ctx.createBiquadFilter();
+    this.sirenLp.type = 'lowpass';
+    this.sirenLp.frequency.value = 2600;
+    this.sirenLp.Q.value = 0.7;
+    this.sirenLp.connect(this.sirenPan || this.sirenGain);
 
     this.sirenBand = ctx.createBiquadFilter();
     this.sirenBand.type = 'bandpass';
-    this.sirenBand.frequency.value = 1250;
+    this.sirenBand.frequency.value = SIREN_HORN;
     this.sirenBand.Q.value = 1.4;
-    this.sirenBand.connect(this.sirenGain);
-    this.sirenGain.connect(this.bus);
+    this.sirenBand.connect(this.sirenLp);
 
     this.sirenA = ctx.createOscillator();
     this.sirenA.type = 'sawtooth';
-    this.sirenA.frequency.value = 620;
+    this.sirenA.frequency.value = SIREN_A;
     this.sirenB = ctx.createOscillator();
     this.sirenB.type = 'square';
-    this.sirenB.frequency.value = 930;
+    this.sirenB.frequency.value = SIREN_B;
     var mix = ctx.createGain();
     mix.gain.value = 0.35;
     this.sirenA.connect(mix);
@@ -6713,23 +7824,226 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     this.sirenLfo = ctx.createOscillator();
     this.sirenLfo.type = 'triangle';
     this.sirenLfo.frequency.value = 0.62;
-    var lfoA = ctx.createGain(); lfoA.gain.value = 210;
-    var lfoB = ctx.createGain(); lfoB.gain.value = 315;
-    this.sirenLfo.connect(lfoA); lfoA.connect(this.sirenA.frequency);
-    this.sirenLfo.connect(lfoB); lfoB.connect(this.sirenB.frequency);
+    /* Kept on the object because the Doppler has to scale these by the same
+       amount it scales the notes. Shifting the base frequency alone would
+       stretch the interval as they closed, so the siren would change tune
+       rather than change pitch - which is not what a siren does. */
+    this.sirenLfoA = ctx.createGain(); this.sirenLfoA.gain.value = SIREN_A_SWEEP;
+    this.sirenLfoB = ctx.createGain(); this.sirenLfoB.gain.value = SIREN_B_SWEEP;
+    this.sirenLfo.connect(this.sirenLfoA); this.sirenLfoA.connect(this.sirenA.frequency);
+    this.sirenLfo.connect(this.sirenLfoB); this.sirenLfoB.connect(this.sirenB.frequency);
 
     var t = ctx.currentTime;
     this.sirenA.start(t); this.sirenB.start(t); this.sirenLfo.start(t);
   };
 
-  // amount 0..1 by proximity, doppler as a pitch multiplier
-  Audio.prototype.setSiren = function (amount, doppler) {
+  /* Where the car is, or null when nobody is chasing you.
+
+       dx    how far across they are, their lane less yours
+       dz    how far up the road, positive when they are behind you
+       dzdt  how fast that gap is changing, your speed less theirs
+
+     The same three the traffic voices are given, in the same units and the
+     same signs, so the two systems agree about what a closing car is. */
+  Audio.prototype.setSiren = function (p) {
     if (!this.ready || !this.sirenGain) return;
     var ctx = this.ctx, t = ctx.currentTime;
-    var want = Math.max(0.0001, amount * 0.16 * this.masterVolume);
-    this.sirenGain.gain.setTargetAtTime(want, t, 0.12);
-    var d = doppler === undefined ? 1 : Math.max(0.85, Math.min(1.2, doppler));
-    this.sirenBand.frequency.setTargetAtTime(1250 * d, t, 0.15);
+    if (!p) {
+      // slower than it fades up: they give up over a ridge, not on a switch
+      this.sirenGain.gain.setTargetAtTime(0.0001, t, 0.45);
+      return;
+    }
+
+    var dx = p.dx, dz = p.dz;
+    var d = Math.sqrt(dx * dx + dz * dz);
+    if (d < 3.0) d = 3.0;
+
+    /* Doppler, worked the way it is for every other vehicle: the radial
+       component of the closing rate against the speed of sound. Positive
+       recede means the gap is opening, which drops the pitch - and that drop
+       is most of how you know you are getting away, well before the mirror
+       tells you anything. */
+    var recede = (dz * p.dzdt) / d;
+    var shift = clampNum(SPEED_OF_SOUND / Math.max(80, SPEED_OF_SOUND + recede),
+      0.80, 1.30);
+
+    this.sirenA.frequency.setTargetAtTime(SIREN_A * shift, t, 0.06);
+    this.sirenB.frequency.setTargetAtTime(SIREN_B * shift, t, 0.06);
+    this.sirenLfoA.gain.setTargetAtTime(SIREN_A_SWEEP * shift, t, 0.06);
+    this.sirenLfoB.gain.setTargetAtTime(SIREN_B_SWEEP * shift, t, 0.06);
+    this.sirenBand.frequency.setTargetAtTime(SIREN_HORN * shift, t, 0.10);
+
+    /* A siren is built to carry, so it cannot use the fourteen-metre half
+       distance a car engine gets - at four hundred metres that model is four
+       thousandths of nothing. The near field falls away like anything else
+       does and the tail goes over to inverse-distance, which is the whole
+       reason you hear one for half a kilometre and a car for fifty metres.
+
+       Then it has to end somewhere, or a car that has given up and turned
+       round is still faintly wailing at you two minutes later. */
+    var near = 1 / (1 + d / 60 + (d / 210) * (d / 210));
+    var fade = clampNum((SIREN_RANGE - d) / (SIREN_RANGE * 0.28), 0, 1);
+    /* No second multiply by the master volume. It used to have one on top of
+       the one the master gain already applies, so the siren dropped away
+       quadratically as you moved the slider and quietly left the mix. */
+    this.sirenGain.gain.setTargetAtTime(
+      Math.max(0.0001, near * fade * SIREN_LEVEL), t, 0.12);
+
+    // 1 is dead astern, 0 is exactly abeam
+    var behind = clampNum(dz / d, 0, 1);
+    this.sirenLp.frequency.setTargetAtTime(
+      clampNum(5200 - 2600 * behind - clampNum(d / 260, 0, 1) * 1800, 1100, 6000),
+      t, 0.10);
+
+    if (this.sirenPan) {
+      this.sirenPan.pan.setTargetAtTime(clampNum(dx / d, -1, 1) * 0.72, t, 0.06);
+    }
+  };
+
+  /* ---- the crossing and what is coming through it -------------------------
+     Three sounds, and they arrive in the order they would.
+
+     The bells first, because you are still moving towards them and they are
+     fixed to a post - so they get real Doppler and a real pan and swing past
+     you like a piece of road furniture, which is what they are. Then the horn,
+     which is coming from somewhere else entirely and does not move with the
+     crossing. Then the ground, which is not really a sound at all: eight
+     hundred tonnes on jointed rail puts something into the car through the
+     seat before it puts anything into the air, and having that build under the
+     bells is most of why the wait is a wait rather than a pause.
+
+     None of it is a sample. The bell is a struck bar - a handful of
+     inharmonic partials with a fast strike and a long ring - and the horn is
+     three detuned squares through a resonant band, which is roughly what a
+     five-chime is doing. */
+  var BELL_PARTIALS = [1, 2.76, 5.40, 8.93];   // a struck bar, not a string
+  var BELL_HZ = 748;                           // the bell on the mast
+  var HORN_CHORD = [138, 174, 207];            // the low three of a five-chime
+  var RAIL_RANGE = 420;                        // metres the ground carries it
+
+  Audio.prototype._buildTrain = function () {
+    var ctx = this.ctx;
+
+    /* The bells. A gain and a panner they all pass through, so a crossing that
+       is still four hundred metres up the road is quiet and off to one side
+       and the one you are stopped at is loud and in front of you. */
+    this.bellGain = ctx.createGain();
+    this.bellGain.gain.value = 0.0001;
+    this.bellGain.connect(this.bus);
+    this.bellPan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+    if (this.bellPan) this.bellPan.connect(this.bellGain);
+    this.bellOut = this.bellPan || this.bellGain;
+    this.bellAt = 0;
+
+    /* The ground. Brown noise through a very low band with a slow flutter on
+       it, which is the joints going under the wheels. It runs all the time and
+       is turned up by how close the train is, the same as the siren. */
+    this.railGain = ctx.createGain();
+    this.railGain.gain.value = 0.0001;
+    this.railGain.connect(this.bus);
+    this.railBand = ctx.createBiquadFilter();
+    this.railBand.type = 'lowpass';
+    this.railBand.frequency.value = 130;
+    this.railBand.Q.value = 2.2;
+    this.railBand.connect(this.railGain);
+    this.railSrc = ctx.createBufferSource();
+    this.railSrc.buffer = this.noiseBuf;
+    this.railSrc.loop = true;
+    this.railSrc.connect(this.railBand);
+    this.railSrc.start(ctx.currentTime);
+  };
+
+  /* One strike. Called by the renderer on the crossing's own beat rather than
+     scheduled here, so the bell and the flash are the same event - a bell that
+     drifts out of step with the lamps reads as two crossings. */
+  Audio.prototype.bell = function (near, panTo) {
+    if (!this.ready || !this.bellGain) return;
+    var ctx = this.ctx, t = ctx.currentTime;
+    var n = clampNum(near, 0, 1);
+    if (n <= 0.002) return;
+    // no faster than the lamps do it, whatever the caller thinks
+    if (t - this.bellAt < 0.22) return;
+    this.bellAt = t;
+
+    ramp(this.bellGain.gain, n * 0.085, ctx, 0.05);
+    if (this.bellPan) {
+      this.bellPan.pan.setTargetAtTime(clampNum(panTo || 0, -1, 1) * 0.7, t, 0.05);
+    }
+    for (var i = 0; i < BELL_PARTIALS.length; i++) {
+      var o = ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.value = BELL_HZ * BELL_PARTIALS[i];
+      var g = ctx.createGain();
+      /* The upper partials are what makes it a bell and they are also what
+         dies first, so each one is quieter and shorter than the one below.
+         Ringing them all for the same length gives an organ. */
+      var lvl = 0.42 / (1 + i * 1.5);
+      var ring = 0.85 / (1 + i * 0.75);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(lvl, t + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + ring);
+      o.connect(g); g.connect(this.bellOut);
+      o.start(t); o.stop(t + ring + 0.02);
+    }
+  };
+
+  /* The horn. Long, long, short, long - the sequence they sound on the
+     approach - so the index decides the length rather than the caller. */
+  Audio.prototype.trainHorn = function (index, near) {
+    if (!this.ready || !this.ctx) return;
+    var ctx = this.ctx, t = ctx.currentTime;
+    var n = clampNum(near === undefined ? 0.5 : near, 0, 1);
+    var dur = (index % 4) === 2 ? 0.42 : 1.35;
+    /* Level goes up with proximity and so does the top end. A horn a kilometre
+       off across paddocks has had everything above a few hundred hertz taken
+       out of it by the air, and getting that right is the difference between
+       "a train somewhere" and "a train there". */
+    var lvl = (0.05 + n * 0.13) * this.masterVolume;
+
+    var band = ctx.createBiquadFilter();
+    band.type = 'lowpass';
+    band.frequency.value = 380 + n * 1500;
+    band.Q.value = 0.9;
+    var out = ctx.createGain();
+    out.gain.setValueAtTime(0.0001, t);
+    // it takes a moment to come up to pressure, and longer to let go
+    out.gain.linearRampToValueAtTime(lvl, t + 0.09);
+    out.gain.setValueAtTime(lvl, t + dur * 0.72);
+    out.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.28);
+    band.connect(out); out.connect(this.bus);
+
+    for (var i = 0; i < HORN_CHORD.length; i++) {
+      var o = ctx.createOscillator();
+      o.type = 'square';
+      // detuned against each other, which is what gives a chime its beating
+      o.frequency.value = HORN_CHORD[i] * (1 + (i - 1) * 0.004);
+      var g = ctx.createGain();
+      g.gain.value = 0.34 / (1 + i * 0.4);
+      o.connect(g); g.connect(band);
+      o.start(t); o.stop(t + dur + 0.34);
+    }
+  };
+
+  /* How much of it is coming up through the car. Handed the distance from the
+     train rather than a level, the same as the siren, so the fall-off lives
+     here with the rest of the physics. */
+  Audio.prototype.setRail = function (metres) {
+    if (!this.ready || !this.railGain) return;
+    var ctx = this.ctx, t = ctx.currentTime;
+    if (metres === null || metres === undefined) {
+      ramp(this.railGain.gain, 0.0001, ctx, 0.5);
+      return;
+    }
+    var d = Math.max(6, metres);
+    /* Slower than the siren falls off and cut off much sooner. Ground-borne
+       noise carries a long way and then stops carrying at all, which is why
+       you can feel a train before you can hear it and why it does not follow
+       you up the road once it has gone past. */
+    var near = 1 / (1 + (d / 110) * (d / 110));
+    var fade = clampNum((RAIL_RANGE - d) / (RAIL_RANGE * 0.4), 0, 1);
+    ramp(this.railGain.gain, Math.max(0.0001, near * fade * 0.16), ctx, 0.22);
+    // and it gets a little brighter as it arrives: at range it is all floor
+    this.railBand.frequency.setTargetAtTime(78 + near * 130, t, 0.25);
   };
 
   /* ---- thunder ------------------------------------------------------------
@@ -8185,11 +9499,31 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       [
         '#include <color_fragment>',
         '  float sideAmt = vWorld.x < 0.0 ? uCanolaL : uCanolaR;',
-        '  float past = smoothstep(9.0, 15.0, abs(vWorld.x));',
+        /* Where the paddock starts. This began at fifteen metres, which is
+           past every light on the car: the beam is aimed down the road, the
+           skirt reaches the tree line, and the strip between them is the one
+           place nothing lands. The crop was being drawn correctly, on the
+           right side, at full strength, into the dark - the shader worked and
+           the picture had nothing in it.
+
+           It starts at the edge of the gravel now and is at full strength a
+           couple of metres later, which is the whole of the ground you can
+           actually see beside the road. Six to eleven was still too far out:
+           measured, it changed two thousand pixels in a thin band up at the
+           horizon and left the near verge - the part the spill lights, and the
+           part you are looking at - untouched. */
+        '  float past = smoothstep(5.0, 7.2, abs(vWorld.x));',
         '  float crop = clamp(sideAmt * past, 0.0, 1.0);',
         '  vec2 fp = vec2(vWorld.x * 0.42, (vWorld.z - uScroll) * 0.08);',
         '  float tex = 0.72 + 0.28 * gn(fp) + 0.10 * gn(fp * 5.3);',
-        '  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.52, 0.47, 0.13) * tex, crop);'
+        /* Paler as well as yellower. The thing that makes a canola paddock
+           read at night is not its colour - there is not enough light for
+           colour - it is that a standing crop throws your headlights back
+           where bare dirt swallows them. A hue swap at the same brightness is
+           a change you cannot see; this is nearly three times the ground's
+           reflectance, which is about right for flowering canola against
+           stubble. */
+        '  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.66, 0.60, 0.22) * tex, crop);'
       ].join('\n'));
   };
 
@@ -10177,6 +11511,212 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     slot.userData.heads[1].position.set(mp.head[0], mp.head[1], mp.head[2]);
   }
 
+  /* ---- the train ----------------------------------------------------------
+     Six hundred metres of grain train crossing the road in front of you, and
+     it is only the second thing in the game with any real mass. What has to
+     land is that it does not care: the road stops at the rails, everything on
+     the road waits, and the train goes through at a steady eighty without
+     changing anything about what it was doing.
+
+     Built along local X because that is the axis the line runs on where it
+     crosses - the group is parked at the crossing and turned by its skew, and
+     every wagon is placed by one number along that axis. The road's own Z is
+     never involved after the group is positioned, which is what makes the
+     collision test in the simulation and the picture here agree.
+
+     The wagons are one InstancedMesh. Forty boxes as forty meshes would be
+     forty draw calls arriving all at once on the frame the train appears,
+     which is the frame that must not stutter. */
+  var TRN_W = 3.05;                      // over the body: standard gauge stock
+  var TRN_H = 3.55;
+  var TRN_DECK = 1.02;                   // daylight under the body
+  var TRN_MAX_WAGONS = 44;
+
+  var trnBodyTex = canvasTex(96, 64, function (c, w, h) {
+    /* A grain hopper: ribbed steel, filthy, with the discharge gear as a dark
+       band along the bottom. Nobody is going to look at this for more than the
+       twenty seconds it takes to go past, but the ribs are what stop it
+       reading as a shipping container - a plain box at this size does. */
+    c.fillStyle = '#6e6a5e'; c.fillRect(0, 0, w, h);
+    for (var i = 0; i < w; i += 8) {
+      c.fillStyle = (i / 8) % 2 ? '#5d594e' : '#77725f';
+      c.fillRect(i, 0, 3, h);
+    }
+    c.fillStyle = 'rgba(30,26,20,0.55)'; c.fillRect(0, h * 0.70, w, h * 0.30);
+    c.fillStyle = 'rgba(120,112,96,0.30)'; c.fillRect(0, h * 0.06, w, 3);
+    // the paint has been on there a long time
+    c.fillStyle = 'rgba(84,58,34,0.28)';
+    for (var k = 0; k < 26; k++) {
+      c.fillRect((k * 37) % w, (k * 23) % h, 5 + (k % 4) * 3, 2 + (k % 3));
+    }
+  });
+  var trnBodyMat = new THREE.MeshLambertMaterial({
+    map: trnBodyTex, flatShading: true
+  });
+  var trnGearMat = new THREE.MeshLambertMaterial({ color: 0x16181b, flatShading: true });
+
+  // the long axis is X: the line runs across the road, not along it
+  var trnWagonGeo = new THREE.BoxGeometry(C.TRAIN_WAGON_LEN * 0.94, TRN_H, TRN_W);
+  var trnGearGeo = new THREE.BoxGeometry(C.TRAIN_WAGON_LEN * 0.98, TRN_DECK, TRN_W * 0.72);
+
+  var trainRig = (function () {
+    var g = new THREE.Group();
+
+    var wagons = new THREE.InstancedMesh(trnWagonGeo, trnBodyMat, TRN_MAX_WAGONS);
+    wagons.frustumCulled = false;
+    var gear = new THREE.InstancedMesh(trnGearGeo, trnGearMat, TRN_MAX_WAGONS);
+    gear.frustumCulled = false;
+    g.add(wagons, gear);
+
+    /* The locomotive. Long hood, short cab, and a nose that is lower than the
+       hood - which is the whole silhouette of an Australian branch line diesel
+       and takes three boxes. */
+    var loco = new THREE.Group();
+    var hood = new THREE.Mesh(
+      new THREE.BoxGeometry(C.TRAIN_LOCO_LEN * 0.62, 2.95, TRN_W * 0.88), trnGearMat);
+    hood.position.set(C.TRAIN_LOCO_LEN * 0.06, TRN_DECK + 1.48, 0);
+    var cab = new THREE.Mesh(
+      new THREE.BoxGeometry(C.TRAIN_LOCO_LEN * 0.20, 3.9, TRN_W * 0.94), trnGearMat);
+    cab.position.set(-C.TRAIN_LOCO_LEN * 0.30, TRN_DECK + 1.95, 0);
+    var nose = new THREE.Mesh(
+      new THREE.BoxGeometry(C.TRAIN_LOCO_LEN * 0.20, 2.05, TRN_W * 0.78), trnGearMat);
+    nose.position.set(C.TRAIN_LOCO_LEN * 0.40, TRN_DECK + 1.02, 0);
+    var frame = new THREE.Mesh(
+      new THREE.BoxGeometry(C.TRAIN_LOCO_LEN * 0.98, TRN_DECK, TRN_W * 0.8), trnGearMat);
+    frame.position.y = TRN_DECK / 2;
+    loco.add(hood, cab, nose, frame);
+    g.add(loco);
+
+    /* The headlight, and the two ditch lights under it. This is what you
+       actually see: a long way out along the line there is nothing but a white
+       point that does not get any bigger for a long time and then does. */
+    /* Out of the fog, all of them. The whole approach happens between four
+       hundred metres and a kilometre and a half down the line, which is well
+       past where fogged geometry has stopped existing - so if the lights went
+       with it there would be nothing to see until the train was on the road,
+       and the twenty-two seconds would be spent looking at an empty paddock.
+
+       A sprite is in world space, so distance still shrinks it: at a kilometre
+       an eleven-metre lamp is about six pixels on a phone. A point of light
+       down the line that does not get any bigger for a long time and then
+       does, which is what one actually looks like. */
+    function lamp(size, colour) {
+      var sp = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: glowTex, color: colour, transparent: true, depthWrite: false,
+        blending: THREE.AdditiveBlending, fog: false, toneMapped: false
+      }));
+      sp.scale.set(size, size, 1);
+      return sp;
+    }
+    var head = lamp(11.0, 0xfff6e0);
+    var ditchA = lamp(4.2, 0xffe9c0);
+    var ditchB = lamp(4.2, 0xffe9c0);
+    var marker = lamp(2.4, 0xff2a12);           // the tail of the last wagon
+    g.add(head, ditchA, ditchB, marker);
+
+    /* One light for the whole thing, thrown from the loco. It is the only
+       light out here that sweeps ACROSS the road rather than down it, and
+       having the paddock and the crossing swing through it as the loco comes
+       on is most of the arrival. */
+    var beam = new THREE.PointLight(0xfff2d8, 0, 200, 2);
+    g.add(beam);
+
+    g.visible = false;
+    scene.add(g);
+    return {
+      g: g, wagons: wagons, gear: gear, loco: loco,
+      head: head, ditch: [ditchA, ditchB], marker: marker, beam: beam
+    };
+  }());
+
+  var _trnM = new THREE.Matrix4();
+  var _trnV = new THREE.Vector3();
+  var _trnQ = new THREE.Quaternion();
+  var _trnS = new THREE.Vector3(1, 1, 1);
+
+  /* Lay the train out along its own axis.
+
+     `u` is the front of it, in metres, with zero at the middle of the road -
+     the same number the simulation runs the collision on. `dir` is which way
+     along local X that is, so the whole thing is one multiply and the picture
+     and the physics cannot drift apart. */
+  function placeTrain(sim, dist, g0) {
+    var tr = sim.train;
+    var t = trainRig;
+    if (!tr.on || tr.phase === 'armed') {
+      t.g.visible = false;
+      t.beam.intensity = 0;
+      return false;
+    }
+    var z = dist - tr.s;
+    t.g.visible = true;
+    t.g.position.set(0, 0, z);
+    t.g.rotation.y = tr.skew;
+
+    var dir = tr.dir;
+    var nose = tr.u * dir;
+    // the loco occupies the first LOCO_LEN of the train, nose first
+    var locoMid = (tr.u - C.TRAIN_LOCO_LEN / 2) * dir;
+    t.loco.position.set(locoMid, 0, 0);
+    // turned so its nose faces the way it is going
+    t.loco.rotation.y = dir > 0 ? 0 : Math.PI;
+
+    var n = Math.min(tr.wagons, TRN_MAX_WAGONS);
+    for (var i = 0; i < n; i++) {
+      var back = C.TRAIN_LOCO_LEN + (i + 0.5) * C.TRAIN_WAGON_LEN;
+      var cx = (tr.u - back) * dir;
+      _trnV.set(cx, TRN_DECK + TRN_H / 2, 0);
+      _trnM.compose(_trnV, _trnQ, _trnS);
+      t.wagons.setMatrixAt(i, _trnM);
+      _trnV.set(cx, TRN_DECK / 2, 0);
+      _trnM.compose(_trnV, _trnQ, _trnS);
+      t.gear.setMatrixAt(i, _trnM);
+    }
+    t.wagons.count = n;
+    t.gear.count = n;
+    t.wagons.instanceMatrix.needsUpdate = true;
+    t.gear.instanceMatrix.needsUpdate = true;
+
+    t.head.position.set(nose - dir * 0.6, TRN_DECK + 3.1, 0);
+    t.ditch[0].position.set(nose - dir * 0.4, TRN_DECK + 0.55, TRN_W * 0.34);
+    t.ditch[1].position.set(nose - dir * 0.4, TRN_DECK + 0.55, -TRN_W * 0.34);
+    /* The headlight does not fade with distance the way the body does. A loco
+       light is a sealed beam pointed down the line and it is visible from the
+       far end of a paddock; letting the fog take it would mean the train
+       arrived without any warning at all, which is the one thing this event
+       must never do. */
+    var out = Math.abs(tr.u);
+    var aimed = clamp(1 - out / 1600, 0.22, 1);
+    t.head.material.opacity = aimed * g0;
+    t.ditch[0].material.opacity = t.ditch[1].material.opacity = aimed * 0.7 * g0;
+
+    var tail = (tr.u - C.TRAIN_LOCO_LEN - n * C.TRAIN_WAGON_LEN) * dir;
+    t.marker.position.set(tail, TRN_DECK + 1.2, 0);
+    t.marker.material.opacity = 0.85 * g0;
+
+    /* The throw. Held off until it is close enough to matter, because a point
+       light two hundred metres out along the line is lighting stubble nobody
+       can see and costing a shadow pass to do it. */
+    t.beam.position.set(nose, TRN_DECK + 3.0, 0);
+    t.beam.intensity = clamp(1 - Math.abs(tr.u) / 150, 0, 1) * 2200 * g0;
+    return true;
+  }
+
+  /* The indicator on the one that turns off. One sprite, moved to whichever
+     corner of it is the outside of the turn, because there is only ever one
+     of these and giving every car in the pool an indicator to have it used
+     once a run is sixteen sprites nobody sees.
+
+     Amber, and deliberately a little too bright: it is the last thing you can
+     still make out when the car itself has gone into the dark, and it is
+     supposed to be the last thing. */
+  var leaverBlink = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex, color: 0xff9a1c, transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending, fog: true, toneMapped: false, opacity: 0
+  }));
+  leaverBlink.scale.set(1.5, 1.5, 1);
+  scene.add(leaverBlink);
+
   /* ---- dust and insects in the beam ---------------------------------------
      A cone of light with nothing in it is just a bright patch of road. These
      are the specks the headlights actually pick out - dust off the shoulder,
@@ -10448,6 +11988,26 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
   spill.target = spillTarget;
   carRoot.add(spill, spillTarget);
 
+  /* ---- the bounce under a canopy -------------------------------------------
+     What you actually see under an avenue at night is not the trees. It is the
+     underside of them: your own headlights come back off the road and the pale
+     gravel and light the canopy from below, and the crown goes from being a
+     hole in the sky to being a ceiling two car lengths over your head.
+
+     Without this the avenue was geometry nobody could see. The trunks read
+     fine - the skirt already rakes along those - but the canopy is fourteen
+     metres up, the beam points at the road, and black leaves against a black
+     sky are nothing at all. Measured, an avenue and an empty paddock put the
+     same number on the top third of the screen to within a fifth of one part
+     in two hundred and fifty-five.
+
+     A point light on the road ahead, because that is where the light it is
+     standing in for actually comes from. It only ever runs inside an avenue,
+     so on open road it is one light at zero intensity and costs nothing. */
+  var canopyBounce = new THREE.PointLight(0xffe0b4, 0, 90, 2);
+  canopyBounce.position.set(0, 0.6, -26);
+  carRoot.add(canopyBounce);
+
   /* ---- fences --------------------------------------------------------------- */
   // Grey timber posts and three plain wires along the road reserve. The posts
   // are pale enough to catch the spill, which is exactly how a fence reads at
@@ -10658,6 +12218,9 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     return m;
   }
 
+  /* Crossings are thirteen kilometres apart and the window is 1.6 km ahead of
+     you plus the length of road behind - so one at a time, always. Three is
+     already generous and stays that way. */
   var XING_POOL = 3;
   var crossings = [];
   for (var xi = 0; xi < XING_POOL; xi++) {
@@ -10676,9 +12239,19 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     var buckB = new THREE.Mesh(crossbuckGeo, buckMat);
     buckA.position.set(-(C.SHOULDER_HALF + 1.4), 0, 3.4);
     buckB.position.set(C.SHOULDER_HALF + 1.4, 0, -3.4);
+    /* The lamps ignore the fog, the way the silo lights and the lamp lenses do.
+       A light does not dim with distance the way a wall does - you see one
+       across a paddock from a kilometre away, which is exactly the distance
+       this has to work at, because a crossing's flashing lights are the only
+       warning you get that something is coming and they come on at up to
+       twelve hundred metres.
+
+       With fog on they were mathematically invisible at that range: at the
+       clear-night density, a kilometre is a factor of about e^-180. The lamps
+       existed, they flashed on the right beat, and there were no photons. */
     var lampA = new THREE.Sprite(new THREE.SpriteMaterial({
       map: glowTex, color: 0xff2a12, transparent: true, depthWrite: false,
-      blending: THREE.AdditiveBlending, fog: true, toneMapped: false, opacity: 0
+      blending: THREE.AdditiveBlending, fog: false, toneMapped: false, opacity: 0
     }));
     lampA.scale.set(1.7, 1.7, 1);
     lampA.position.set(-(C.SHOULDER_HALF + 1.4), 3.05, 3.4);
@@ -10687,7 +12260,9 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     xg.add(xbed, rails, rails2, buckA, buckB, lampA, lampB);
     xg.visible = false;
     scene.add(xg);
-    crossings.push({ group: xg, lamps: [lampA, lampB], buck: buckMat });
+    // `beat` is last frame's lamp state, so the bell can be struck on the
+    // change rather than on a clock that would drift away from the flash
+    crossings.push({ group: xg, lamps: [lampA, lampB], buck: buckMat, beat: 0 });
   }
 
   /* ---- destination signs --------------------------------------------------- */
@@ -12194,11 +13769,23 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
        sitting in front of the car, occluding the road and blocking light. */
     var avenue = Core.avenueAt(dist);
     if (hudMirror.visible) holdHudMirror();
+    /* Everything electrical, which includes the thing you are steering by.
+
+       This is the only state in the game that takes the headlights off a
+       moving car, and it is deliberately not a fade: the power stops, and
+       what you have left is a windscreen with the road behind it somewhere.
+       The last third of it is the power coming back, which `darkness()`
+       already shapes, so the beams come up rather than snap on. */
+    var dark = sim.darkness();
     // candela, falling off as inverse square like a real lamp
     var beamPower = (!beamOn ? 0
-      : sim.alive ? (highBeam ? BEAM_HIGH : BEAM_LOW) : BEAM_LOW * 0.10) * g0;
-    // a whisker of sheeting still catches the town lights and the moon
-    retroBeam = beamOn ? 1 : 0.06;
+      : sim.alive ? (highBeam ? BEAM_HIGH : BEAM_LOW) : BEAM_LOW * 0.10) *
+      (1 - dark) * g0;
+    /* The sheeting is retroreflective, so it is bouncing YOUR light back at
+       you and there is nothing to bounce. It keeps the same whisker it has
+       with the lamps switched off, which is the moon and whatever town is
+       over the horizon. */
+    retroBeam = (beamOn && dark < 0.5) ? 1 : 0.06;
     var aim = highBeam ? AIM_HIGH : AIM_LOW;
     var wantCookie = highBeam ? cookieHigh : cookieLow;
     for (var b = 0; b < 2; b++) {
@@ -12237,10 +13824,33 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
        hundred and thirty trees a frame that nobody could see. */
     var spillWant = (beamOn && beamPower > 1) ? (highBeam ? 460 : 270) : 0;
     // wet tarmac throws more of the beam back up at you
-    spillWant *= 1 + sim.weather.rain * 0.35 + avenue * 2.6;
+    /* And a crop throws it back too.
+
+       This is the same discovery the canopy produced, at the other end of the
+       car. The paddocks were being shaded correctly - right side, right
+       distance, right strength - and it changed two thousand pixels in a band
+       at the horizon, because past the gravel there is no light on this road
+       at all and a paler colour multiplied by nothing is still nothing.
+
+       A standing crop does not just look paler than dirt, it IS paler: it
+       returns your headlights where soil swallows them. So the thing to raise
+       is not the albedo, it is what the albedo has to work with. */
+    var cropNear = Math.max(groundUniforms.uCanolaL.value, groundUniforms.uCanolaR.value);
+    spillWant *= 1 + sim.weather.rain * 0.35 + avenue * 2.6 + cropNear * 1.5;
     spill.intensity = lerp(spill.intensity, spillWant, 1 - Math.pow(0.001, dt));
+
+    /* And the ceiling. Off entirely unless there is one, and off with the
+       lights - it is your own beam coming back off the road, so it cannot be
+       brighter than the thing making it and it cannot exist without it. */
+    var bounceWant = (beamOn && beamPower > 1)
+      ? avenue * avenue * (highBeam ? 9000 : 6200) * g0 : 0;
+    canopyBounce.intensity = lerp(canopyBounce.intensity, bounceWant,
+      1 - Math.pow(0.004, dt));
     // and it opens out, because what it is lighting is beside you now
-    spill.angle = (highBeam ? 1.24 : 1.15) * (1 + avenue * 0.12);
+    // and it opens wider still over a crop, because the paddock is the thing
+    // being lit rather than a tree line at the edge of it
+    spill.angle = Math.min(1.45,
+      (highBeam ? 1.24 : 1.15) * (1 + avenue * 0.12 + cropNear * 0.10));
 
     // the drawn pool that gives the road its brightness back
     // the pool carries the road now that the flat skirt is not, so it is
@@ -12551,6 +14161,14 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     railR.position.x = railX + 0.72;
     railTex.offset.y = (dist / (ROAD_LEN / 260)) % 1;
 
+    placeTrain(sim, dist, g0);
+
+    /* What the crossing is making, decided across all three slots and issued
+       once. Collected here rather than struck inside the loop so that two
+       crossings in view - which happens, briefly, at the top of a rise -
+       cannot ring over each other. */
+    var bellWant = false, bellNear = 0, bellPan = 0;
+
     var xList = sim.visibleCrossings();
     for (var xk = 0; xk < crossings.length; xk++) {
       var xSlot = crossings[xk];
@@ -12563,11 +14181,51 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       xSlot.group.position.set(0, 0, dist - xInfo.s);
       xSlot.group.rotation.y = xInfo.skew;
       retroSign({ material: xSlot.buck }, xInfo.s - dist, g0);
-      // a set of lights working away with nothing coming
-      var live = xInfo.active && (xInfo.haunted || sim.dread > 0.5);
+      /* Three reasons for a set of lights to be going, and only one of them
+         means anything is coming.
+
+         The haunted ones came first and are still here: a crossing working
+         away to itself on an empty line, which was unnerving precisely because
+         it never resolved. Now that some of them DO resolve, that one has
+         become the better joke rather than a worse one - you cannot tell them
+         apart until the twenty-two seconds are up. */
+      var armed = sim.train.lights && sim.train.xing &&
+        sim.train.xing.index === xInfo.index;
+      var live = armed || (xInfo.active && (xInfo.haunted || sim.dread > 0.5));
       var beat = live ? (Math.sin(time * 5.2) > 0 ? 1 : 0) : 0;
       xSlot.lamps[0].material.opacity = live ? beat * 0.95 * g0 : 0;
       xSlot.lamps[1].material.opacity = live ? (1 - beat) * 0.95 * g0 : 0;
+      /* The bell on the same beat as the lamps, struck on the change rather
+         than on a clock of its own - they are one mechanism and a bell that
+         drifts out of step with the flash reads as a second crossing
+         somewhere. Nearest set of lights wins the striker. */
+      if (live && audio.bell) {
+        var xz = xInfo.s - dist;
+        var xNear = clamp(1 - Math.abs(xz) / 300, 0, 1);
+        if (beat !== xSlot.beat && xNear > bellNear) {
+          bellNear = xNear;
+          bellPan = clamp(xz / 90, -1, 1) * 0.35;
+          bellWant = true;
+        }
+      }
+      xSlot.beat = beat;
+    }
+
+    if (bellWant) audio.bell(bellNear * bellNear, bellPan);
+
+    /* The ground. Distance from the train itself, not from the crossing: what
+       you feel is the wheels, and the wheels are a long way off down the line
+       for most of the wait. Straight-line distance in the road's own frame,
+       which for something crossing at right angles is near enough its position
+       along the line and how far up the road the crossing is. */
+    if (audio.setRail) {
+      if (sim.train.on && sim.train.phase !== 'armed') {
+        var rz = sim.train.s - dist;
+        var ru = sim.train.u;
+        audio.setRail(Math.sqrt(rz * rz + ru * ru));
+      } else {
+        audio.setRail(null);
+      }
     }
 
     /* --- destination signs ----------------------------------------------- */
@@ -12786,11 +14444,21 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     var treeList = sim.visibleTrees();
     for (var fi = 0; fi < treeList.length; fi++) {
       var ft = treeList[fi];
-      if (Core.hash1(fi + (ft.s | 0), 91) > density) continue;
+      /* Thinned on the lower quality settings, except in an avenue. Half the
+         trees taken out of a wood is a slightly thinner wood; half taken out
+         of an avenue is not an avenue, and the one place the trees ARE the
+         thing being looked at is the one place they cannot be the first thing
+         dropped. It costs at most a few dozen instances and only inside one. */
+      if (ft.avenue < 0.5 && Core.hash1(fi + (ft.s | 0), 91) > density) continue;
       var slot = foliageUsed[ft.model];
       if (slot >= FOLIAGE_EACH) continue;
       _v.set(ft.side * (C.TARMAC_HALF + ft.offset), 0, dist - ft.s);
-      _e.set(ft.lean, ft.rot, 0);
+      /* ZYX, so the sideways tilt is applied LAST and therefore about the
+         world axis rather than about the trunk after it has been spun. In the
+         default XYZ order the spin would swing the lean round with it and an
+         avenue would lean in a different random direction per tree, which is
+         a wood in a gale rather than a row of trees over a road. */
+      _e.set(ft.lean, ft.rot, ft.tilt || 0, 'ZYX');
       _q.setFromEuler(_e);
       _s.set(ft.scale, ft.scale, ft.scale);
       _m.compose(_v, _q, _s);
@@ -12807,6 +14475,7 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     heard.length = 0;
     var spillN = 0;
     var policeN = 0, beaconUsed = false;
+    var blinkUsed = false;
     var rtN = 0;
     var scorchN = 0, ufoShown = false, wideShown = false, pilotShown = false;
     var stopShown = false;
@@ -12934,6 +14603,26 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
           }
           break;
         case 'police':
+          /* The car, not just the horn on top of it. A pursuit is the one time
+             another vehicle sits on your bumper for a minute at a time, and
+             with nothing but a siren coming out of it the shape in the mirror
+             had no weight at all - it was a sound effect, not a car. It goes
+             into the same mixer as everything else on the road now, so it gets
+             the Doppler, the pan and the ducking the traffic gets, and the
+             siren rides on top of a real engine.
+
+             A parked one is a car with its engine off. It gets no voice, which
+             is also what makes coming across one silent on the verge work. */
+          if (e.state !== 'parked') {
+            var phr = heardSlot();
+            phr.id = e.id;
+            phr.kind = 'police';
+            phr.onc = false;
+            phr.dx = e.x - sim.x;
+            phr.dz = z;
+            phr.dzdt = sim.speed - e.speed;
+            phr.speed = e.speed;
+          }
           if (policeN < policeCars.length) {
             var pc = policeCars[policeN++];
             pc.g.visible = true;
@@ -12998,13 +14687,31 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
           if (o) {
             dressVehicle(o, e.model || 0);
             o.position.set(e.x, 0, z);
-            o.rotation.y = ((e.kind === 'oncoming') ? Math.PI : 0) + (e.reversed ? Math.PI : 0);
+            o.rotation.y = ((e.kind === 'oncoming') ? Math.PI : 0) +
+              (e.reversed ? Math.PI : 0) + (e.yaw || 0);
             // a reversed car has its headlights pointed back at you
             var showTails = (e.kind !== 'oncoming') && !e.reversed;
             var showHeads = (e.kind === 'oncoming') || (e.kind === 'tailgater') || !!e.reversed;
+            /* The one in the bay has everything on. That is the detail the
+               whole thing rests on: a car parked in the dark with its lights
+               burning has somebody in it, and this one does not. */
+            if (e.derelict) showHeads = true;
             for (var g2 = 0; g2 < 2; g2++) {
               o.userData.tails[g2].visible = showTails;
               o.userData.heads[g2].visible = showHeads;
+            }
+            /* The indicator. It comes on for a turn, and it is still going
+               after the turn is over and the car is out in the stubble, which
+               is the only part of the event that is actually wrong and the
+               reason it is worth a light of its own. */
+            if (e.leaver && e.indicating && !blinkUsed) {
+              blinkUsed = true;
+              var bOn = (e.blink % 0.82) < 0.42;
+              leaverBlink.position.set(
+                e.x + e.side * 0.8 * Math.cos(e.yaw || 0),
+                0.62,
+                z + e.side * 0.8 * Math.sin(e.yaw || 0) - 1.6);
+              leaverBlink.material.opacity = bOn ? 0.95 * g0 : 0;
             }
           }
           break;
@@ -13023,6 +14730,7 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       copStopRig.g.visible = false;
       copStopRig.wash.intensity = 0;
     }
+    if (!blinkUsed) leaverBlink.material.opacity = 0;
     if (!wideShown) wideRig.g.visible = false;
     if (!pilotShown) widePilot.g.visible = false;
     for (var pk = policeN; pk < policeCars.length; pk++) policeCars[pk].g.visible = false;
@@ -13275,7 +14983,10 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
 
     /* --- dash glow ------------------------------------------------------- */
     dashLight.position.set(clusterGroup.position.x, 1.06, -0.42);
-    dashLight.intensity = (sim.alive ? 0.10 : 0.03) * g0;
+    var dashDark = 1 - sim.darkness();
+    dashLight.intensity = (sim.alive ? 0.10 : 0.03) * dashDark * g0;
+    // and the courtesy light over your shoulder, which is on the same fuse
+    cabinLight.intensity = 0.30 * dashDark;
   }
 
   /* ======================================================================= */
@@ -13290,6 +15001,16 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     var W = 512, H = 128;
     c.fillStyle = '#05070a';
     c.fillRect(0, 0, W, H);
+
+    /* Dead. Not dimmed - a cluster with the power off is a sheet of black
+       plastic, and drawing a faint speedo on it would be telling you the one
+       thing the event exists to take away. It gets redrawn as soon as there
+       is power, and the redraw is on a twentieth-of-a-second clock, so it
+       comes back before you have finished noticing. */
+    if (sim.darkness() > 0.5) {
+      clusterTex.needsUpdate = true;
+      return;
+    }
 
     var lowFuel = sim.fuel < C.TANK * 0.18;
     var hurt = sim.damage > 55;
@@ -13535,6 +15256,38 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
         case 'backseat': audio.stinger(); break;
         case 'roo': audio.tone(180, 0.3, 0.05, 'sawtooth'); break;
         case 'blackout': audio.tone(70, 1.4, 0.06, 'sine'); break;
+
+        /* --- the crossing ------------------------------------------------ */
+        case 'trainHorn':
+          audio.trainHorn(e.data.index, e.data.near);
+          break;
+        /* The moment it reaches the road. Not a crash and not a sting - eight
+           hundred tonnes arriving is felt rather than heard, so it goes into
+           the shake and the ground layer takes care of the rest. */
+        case 'trainThrough':
+          sim.shake = Math.max(sim.shake, 0.34);
+          break;
+        case 'trainHit':
+          /* The impact and the weight of it together. A car meeting a car is
+             one bang; a car meeting a train is the bang and then the thing
+             carrying on through, and the boom underneath is what says which
+             of the two just happened. */
+          audio.impact(100);
+          audio.boom(1.4);
+          flash(1);
+          break;
+        case 'trainClose': audio.stinger(); break;
+        case 'trainBeaten': audio.pickup(); break;
+
+        /* --- the lights -------------------------------------------------- */
+        /* Nothing. A car's electrics failing is the absence of noise, and
+           putting a sound on it would be filling in the one thing the event
+           is made of. The radio cutting out IS the sound. */
+        case 'carDark': flash(0.35); break;
+        case 'carLight': audio.tuneBurst(); break;
+        case 'skip': audio.stinger(); break;
+        case 'derelict': break;
+        case 'leaverGo': break;
         /* Thunder is the boom with the distance dialled in: a long way off it
            is all rumble, and close it still is not a crack - a crack is what
            you get within a few hundred metres and these never are. */
@@ -13929,6 +15682,11 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     return m ? (parseInt(m[1], 10) >>> 0) : null;
   }());
 
+  /* ?train puts something on every crossing, for looking at one on purpose.
+     Not a setting, because it is not a way to play - there is a crossing every
+     thirteen kilometres and this makes all of them a stop. */
+  var forcedTrain = /[?&]train\b/.test(window.location.search || '');
+
   function runOptions() {
     var o = {
       driveSide: settings.driveSide,
@@ -13936,7 +15694,8 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       openRoad: settings.mode === 'openRoad',
       aurora: settings.aurora,
       odd: settings.odd,
-      preview: settings.preview
+      preview: settings.preview,
+      forceTrain: forcedTrain
     };
     if (forcedSeed !== null) o.seed = forcedSeed;
     return o;
@@ -14230,6 +15989,11 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     try { frame(now); } catch (err) { reportCrash('the frame loop', err); }
   }
 
+  /* Where the car behind you is, refilled each frame. The mixer reads it
+     inside the same frame and never keeps it, so one object does for the whole
+     run rather than one an animation frame. */
+  var SIREN_AT = { dx: 0, dz: 0, dzdt: 0 };
+
   function frame(now) {
     var dt = Math.min((now - last) / 1000, 0.05);
     last = now;
@@ -14295,27 +16059,39 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
         // reception is a property of where you are, not of how long you have
         // been listening, so the radio needs to know how far down the road it is
         dist: sim.dist,
-        alive: sim.alive
+        alive: sim.alive,
+        // the car's own electrics, which the radio runs off
+        dark: sim.darkness()
       });
 
-      /* The siren, faded by how close the nearest pursuing car is. It carries
-         a long way - you should hear one behind you well before it is a shape
-         in the mirror, which is most of what makes being chased out here feel
-         like being chased. */
-      var siren = 0, sirenDop = 1;
+      /* The siren. It carries a long way - you should hear one behind you well
+         before it is a shape in the mirror, which is most of what makes being
+         chased out here feel like being chased.
+
+         What goes across is where the car is, not how loud it ought to be: the
+         mixer gets the same three numbers a passing truck gets and works out
+         the pitch, the level, the side and the muffling from them. This loop
+         walks the entities rather than the draw list on purpose, because the
+         draw list ends at VIEW_BEHIND and the siren does not.
+
+         Nearest wins. The sim only ever runs one pursuit, but if that ever
+         changes, one siren is still what you want to hear. */
+      var sirenSrc = null, sirenBest = 1e9;
       for (var pi = 0; pi < sim.entities.length; pi++) {
         var pe = sim.entities[pi];
         if (pe.kind !== 'police' || !pe.alive) continue;
         if (pe.state !== 'chasing' && pe.state !== 'pullover') continue;
-        var away = Math.abs(pe.s - sim.dist);
-        var amt = Math.max(0, 1 - away / 420);
-        if (amt > siren) {
-          siren = amt * amt;
-          // closing on you raises it, dropping back lowers it
-          sirenDop = 1 + Math.max(-0.15, Math.min(0.2, (pe.speed - sim.speed) / 60));
-        }
+        var pdz = sim.dist - pe.s;              // positive when they are behind
+        var pdx = pe.x - sim.x;
+        var pdd = Math.sqrt(pdx * pdx + pdz * pdz);
+        if (pdd >= sirenBest) continue;
+        sirenBest = pdd;
+        SIREN_AT.dx = pdx;
+        SIREN_AT.dz = pdz;
+        SIREN_AT.dzdt = sim.speed - pe.speed;   // as the traffic reports it
+        sirenSrc = SIREN_AT;
       }
-      audio.setSiren(siren, sirenDop);
+      audio.setSiren(sirenSrc);
     } else if (state === 'title') {
       // slow idle drift so the menu has something moving behind it
       sim.dist += dt * 9;
