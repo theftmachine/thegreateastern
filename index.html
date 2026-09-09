@@ -545,6 +545,15 @@ button.chip:focus-visible{outline:3px solid var(--dust);outline-offset:3px}
 @media(prefers-reduced-motion:reduce){.plate{transition:none}.tag{animation:none}}
 </style>
 <body>
+<!-- v3.85.0: independent weather coverage, varied cloud base/height profiles,
+  edge erosion, world-relative placement and empty/opaque sample skipping.
+-->
+<!-- v3.84.0: short volumetric cloud raymarch, seamless density atlas, rounded
+  cloud bodies, moonlight self-shadowing and depth-dependent transparency.
+-->
+<!-- v3.83.0: seamless overhead cloud mapping, curled billowing banks, slower
+  high wisps, moonlit rims, dense storm cores and local lightning illumination.
+-->
 <!-- v3.82.0: moving green/pink aurora cloud scattering; mobile soft-shadow
   alpha blending, capped opacity and consistent world-space projection.
 -->
@@ -674,7 +683,7 @@ button.chip:focus-visible{outline:3px solid var(--dust);outline-offset:3px}
 <!-- ------------------------------------------------------------- pause --- -->
 <div id="pause" class="screen thin hidden">
   <h2 class="head">Paused</h2>
-  <p class="driveHelp">W / ↑ accelerate · S / ↓ brake · A D / ← → steer<br>Stop, release the brake, then hold it again to reverse.<br>Pull off the road and stop to repair. Stop at a roadhouse to refuel.<br>Pull onto the shoulder for a hitchhiker; park in their marked bay to drop them off.</p>
+  <p class="driveHelp">W / ↑ accelerate · S / ↓ brake · A D / ← → steer<br>Stop, release the brake, then hold it again to reverse.<br>Xbox controller: left stick steers · RT accelerates · LT brakes, then reverses.<br>Trigger pressure controls power · Menu pauses · Y headlights · X radio.<br>Connect your controller and press a button, then release the sticks and triggers to enable driving.<br>Pull off the road and stop to repair. Stop at a roadhouse to refuel.<br>Pull onto the shoulder for a hitchhiker; park in their marked bay to drop them off.</p>
   <div class="menu">
     <button class="plate btn" id="btnResume"><span>Resume</span></button>
     <button class="plate btn ghost" id="btnPauseSettings"><span>Settings</span></button>
@@ -748,7 +757,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  var VERSION = '3.82.0';
+  var VERSION = '3.87.0';
 
   /* --------------------------------------------------------------- constants */
   var C = {
@@ -5008,6 +5017,23 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     // second press backs you up. Without it, nosing up to a fence was final.
     var brakeEdge = brake > 0.3 && !this._brakeWas;
     this._brakeWas = brake > 0.3;
+    if (input.analogReverse) {
+      // Opposite trigger brakes to rest before changing direction.
+      if (this.speed > 0.05) {
+        this.speed = Math.max(0, this.speed + a * dt);
+      } else if (this.speed < -0.05) {
+        if (throttle > 0 || brake === 0 || this.fuel <= 0) {
+          this.speed = Math.min(0, this.speed + (throttle * C.BRAKE_ACCEL + C.ENGINE_DRAG) * dt);
+        } else {
+          this.speed = Math.max(-C.REVERSE_MAX, this.speed - C.REVERSE_ACCEL * brake * health * dt);
+        }
+      } else if (brake > 0 && throttle === 0 && this.fuel > 0) {
+        this.speed = Math.max(-C.REVERSE_MAX, this.speed - C.REVERSE_ACCEL * brake * health * dt);
+      } else {
+        this.speed = Math.max(0, this.speed + a * dt);
+      }
+      this.reversing = this.speed < 0;
+    } else {
     if (this.reversing) {
       if (throttle > 0.1 || brake < 0.2) this.reversing = false;
     } else if (brakeEdge && this.speed < 0.3 && throttle < 0.1) {
@@ -5018,6 +5044,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       this.speed = Math.max(this.speed - C.REVERSE_ACCEL * dt, -C.REVERSE_MAX);
     } else {
       this.speed = Math.max(0, this.speed + a * dt);
+    }
     }
     if (this.speed > this.stats.topSpeed) this.stats.topSpeed = this.speed;
 
@@ -9284,11 +9311,58 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
      the cloud at that bearing. That is what a fireball behind cloud actually
      looks like - you never see the meteor, you see a patch of cloud go orange
      and travel. */
+  // Seamless 32-cubed cloud density, packed as padded slices. Generate once;
+  // the shader takes a short walk through it instead of painting a flat mask.
+  var cloudWeather;
+  var cloudVolume = (function () {
+    var size = 32, tile = 34, cols = 8, width = tile * cols, height = tile * 4;
+    var bytes = new Uint8Array(width * height * 4);
+    function hash(x,y,z,n) {
+      x=(x%n+n)%n; y=(y%n+n)%n; z=(z%n+n)%n;
+      var q=Math.imul(x+17,374761393)^Math.imul(y+31,668265263)^Math.imul(z+7,2147483647);
+      q=Math.imul(q^(q>>>13),1274126177); return ((q^(q>>>16))>>>0)/4294967295;
+    }
+    function noise(x,y,z,n) {
+      var ix=Math.floor(x),iy=Math.floor(y),iz=Math.floor(z);
+      var fx=x-ix,fy=y-iy,fz=z-iz;
+      fx=fx*fx*(3-2*fx);fy=fy*fy*(3-2*fy);fz=fz*fz*(3-2*fz);
+      var value=0;
+      for(var k=0;k<2;k++)for(var j=0;j<2;j++)for(var i=0;i<2;i++)
+        value+=hash(ix+i,iy+j,iz+k,n)*(i?fx:1-fx)*(j?fy:1-fy)*(k?fz:1-fz);
+      return value;
+    }
+    for(var z=0;z<size;z++)for(var y=0;y<tile;y++)for(var x=0;x<tile;x++) {
+      var u=((x-1+size)%size)/size,v=((y-1+size)%size)/size,w=z/size;
+      var den=noise(u*4,v*4,w*4,4)*0.70+noise(u*8,v*8,w*8,8)*0.23+noise(u*16,v*16,w*16,16)*0.07;
+      var at=(((z/cols|0)*tile+y)*width+(z%cols)*tile+x)*4;
+      bytes[at]=bytes[at+1]=bytes[at+2]=Math.round(den*255);bytes[at+3]=255;
+    }
+    // Coverage, cloud type/height and base variation.
+    // Broad placement varies independently of the much finer density texture.
+    var mapSize=128, weatherBytes=new Uint8Array(mapSize*mapSize*4);
+    for(var wy=0;wy<mapSize;wy++)for(var wx=0;wx<mapSize;wx++) {
+      var mx=wx/mapSize,my=wy/mapSize,wi=(wy*mapSize+wx)*4;
+      weatherBytes[wi]=Math.round(255*(noise(mx*3,my*3,0.4,3)*0.78+noise(mx*6,my*6,2.1,6)*0.22));
+      weatherBytes[wi+1]=Math.round(255*noise(mx*4,my*4,1.7,4));
+      weatherBytes[wi+2]=Math.round(255*noise(mx*2,my*2,0.9,2));
+      weatherBytes[wi+3]=255;
+    }
+    cloudWeather=new THREE.DataTexture(weatherBytes,mapSize,mapSize,THREE.RGBAFormat);
+    cloudWeather.minFilter=cloudWeather.magFilter=THREE.LinearFilter;
+    cloudWeather.wrapS=cloudWeather.wrapT=THREE.RepeatWrapping;
+    cloudWeather.generateMipmaps=false;cloudWeather.needsUpdate=true;
+    var tex=new THREE.DataTexture(bytes,width,height,THREE.RGBAFormat);
+    tex.minFilter=tex.magFilter=THREE.LinearFilter;
+    tex.generateMipmaps=false;tex.needsUpdate=true;
+    return tex;
+  }());
   var cloudMat = new THREE.ShaderMaterial({
     side: THREE.BackSide, transparent: true, depthWrite: false,
     fog: false, toneMapped: false,
     uniforms: {
       uTime: { value: 0 }, uCover: { value: 0 }, uGain: { value: 1 },
+      uStorm: { value: 0 }, uDetail: { value: 3 }, tVolume: { value: cloudVolume },
+      tWeather: { value: cloudWeather }, uTravel: { value: new THREE.Vector2() },
       uFlash: { value: 0 }, uBoltAz: { value: 0 }, uBoltEl: { value: 0.2 },
       uFireAz: { value: 0 }, uFireEl: { value: 0.5 }, uFireAmt: { value: 0 },
       uAurAz: { value: 0 }, uAurAmt: { value: 0 }, uAurTime: { value: 0 }
@@ -9298,19 +9372,40 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       'void main(){ vUv = uv; vP = normalize(position);' +
       'gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
     fragmentShader: [
-      'uniform float uTime, uCover, uGain, uFlash, uBoltAz, uBoltEl;',
+      'uniform float uTime, uCover, uGain, uFlash, uBoltAz, uBoltEl, uStorm, uDetail;',
       'uniform float uFireAz, uFireEl, uFireAmt, uAurAz, uAurAmt, uAurTime;',
       'varying vec2 vUv; varying vec3 vP;',
-      'float h(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5); }',
-      'float n2(vec2 p){',
-      '  vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);',
-      '  return mix(mix(h(i), h(i+vec2(1,0)), f.x),',
-      '             mix(h(i+vec2(0,1)), h(i+vec2(1,1)), f.x), f.y);',
+      'uniform sampler2D tVolume, tWeather;',
+      'uniform vec2 uTravel;',
+      'float volumeNoise(vec3 p) {',
+      '  vec3 q = fract(p) * 32.0;',
+      '  float z0 = floor(q.z), z1 = mod(z0 + 1.0, 32.0);',
+      '  vec2 xy = q.xy + 1.5;',
+      '  vec2 uv0 = (vec2(mod(z0,8.0),floor(z0/8.0))*34.0+xy)/vec2(272.0,136.0);',
+      '  vec2 uv1 = (vec2(mod(z1,8.0),floor(z1/8.0))*34.0+xy)/vec2(272.0,136.0);',
+      '  return mix(texture2D(tVolume,uv0).r,texture2D(tVolume,uv1).r,fract(q.z));',
       '}',
-      'float fbm(vec2 p){',
-      '  float v = 0.0, a = 0.5;',
-      '  for (int i = 0; i < 4; i++){ v += a * n2(p); p *= 2.03; a *= 0.5; }',
-      '  return v;',
+      // Original implementation: broad coverage, vertical profiles, then erosion.
+      // Inspired by the separation of weather/layer/shape controls in Takram.
+      'float cloudDensity(vec3 point, float altitude, bool detailed) {',
+      '  vec4 weather = texture2D(tWeather, point.xz * vec2(0.38, 0.76));',
+      '  float frontier = mix(0.78, 0.30, uCover);',
+      '  float bank = smoothstep(frontier - 0.09, frontier + 0.10, weather.r);',
+      '  float type = smoothstep(0.20, 0.78, weather.g);',
+      '  float base = 0.035 + weather.b * 0.065;',
+      '  float ceiling = mix(0.62, 0.88, type);',
+      '  float h = (altitude - base) / max(ceiling - base, 0.12);',
+      '  float profile = smoothstep(0.0, 0.085, h) * (1.0 - smoothstep(0.48, 1.0, h));',
+      '  if (bank < 0.002 || profile < 0.002) return 0.0;',
+      '  vec3 billowPoint = point * vec3(1.0, 2.0, 2.0);',
+      '  float body = volumeNoise(billowPoint);',
+      '  float shape = smoothstep(0.25, 0.63, body);',
+      '  if (detailed && uDetail > 2.5) {',
+      '    float erosion = 1.0 - volumeNoise(billowPoint * 3.7 + vec3(0.17,0.43,0.29));',
+      '    shape = max(0.0, shape - erosion * 0.30 * (1.0 - shape));',
+      '  }',
+      '  float upperDensity = mix(1.05, 0.80, smoothstep(0.18, 0.85, h));',
+      '  return shape * profile * upperDensity * bank * uCover;',
       '}',
       // where this fragment is on the sky, as a bearing and a height
       'float bearing(vec3 p){ return atan(p.x, -p.z); }',
@@ -9319,19 +9414,45 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       '  return d;',
       '}',
       'void main(){',
-      '  float az = bearing(vP);',
-      '  float el = asin(clamp(vP.y, -1.0, 1.0));',
-      // the deck itself: torn, drifting, thicker overhead than at the horizon
-      '  vec2 uv = vec2(az * 1.6 + uTime * 0.010, el * 3.4 - uTime * 0.004);',
-      '  float d = fbm(uv * 2.4);',
-      '  d = smoothstep(0.30, 0.78, d);',
-      // it thins out towards the horizon, where you can see under it
-      '  float band = smoothstep(0.02, 0.30, el);',
-      '  float thick = d * band * uCover;',
-      '  vec3 c = vec3(0.055, 0.060, 0.080) * (0.5 + 0.5 * d);',
+      '  vec3 direction = normalize(vP);',
+      '  float az = bearing(direction);',
+      '  float el = asin(clamp(direction.y, -1.0, 1.0));',
+      // Sample a thick slab along the view ray. Front-to-back accumulation
+      // builds rounded opaque centres while edges remain soft and translucent.
+      '  vec2 plane = direction.xz / sqrt(direction.y * direction.y + 0.012);',
+      '  vec3 wind = vec3(uTime * 0.00075, 0.0, -uTime * 0.00032);',
+      '  float steps = uDetail * 2.0;',
+      '  float alpha = 0.0, weight = 0.0;',
+      '  vec3 accumulated = vec3(0.0);',
+      '  float band = smoothstep(0.008, 0.12, el);',
+      '  vec3 moonRay = normalize(vec3(-0.60, 0.90, 0.40));',
+      '  float moonward = pow(max(dot(direction, moonRay),0.0), 4.0);',
+      '  for (int si = 0; si < 8; si++) {',
+      '    if (float(si) >= steps || alpha > 0.985) break;',
+      '    float layer = (float(si) + 0.5) / steps;',
+      '    float height = 0.55 + layer * 0.95;',
+      '    vec3 point = vec3(plane.x * height, height, plane.y * height) * 0.30 + wind;',
+      '    point.xz += uTravel;',
+      '    float density = cloudDensity(point, layer, true);',
+      '    if (density < 0.001) continue;',
+      '    float above = cloudDensity(point + moonRay * 0.075, layer + 0.14, false);',
+      '    float illumination = exp(-above * (4.5 + uStorm * 2.0));',
+      '    float edgeLight = exp(-density * 5.0);',
+      '    vec3 shade = mix(vec3(0.015,0.022,0.035),vec3(0.008,0.013,0.023),uStorm);',
+      '    vec3 silver = vec3(0.068,0.086,0.115) * illumination * (0.16 + edgeLight * 0.84);',
+      '    silver += vec3(0.10,0.13,0.17) * moonward * illumination * edgeLight;',
+      '    float sampleAlpha = 1.0 - exp(-density * (9.0 + uStorm * 3.0) / steps);',
+      '    float contribution = (1.0-alpha) * sampleAlpha;',
+      '    accumulated += (shade + silver) * contribution;',
+      '    weight += density / steps;',
+      '    alpha += contribution;',
+      '  }',
+      '  float mass = clamp(weight * 1.8, 0.0, 1.0);',
+      '  float d = mass;',
+      '  vec3 c = accumulated / max(alpha, 0.001);',
       // lightning, lighting the cloud from inside it
       '  float bd = angTo(az, uBoltAz);',
-      '  float bolt = uFlash * (1.0 - smoothstep(0.15, 2.0, bd)) * (0.35 + 0.65 * d);',
+      '  float bolt = uFlash * exp(-bd * bd * 2.1 - pow((el - uBoltEl) * 1.8, 2.0)) * (0.28 + 0.72 * mass);',
       '  c += vec3(0.78, 0.82, 1.0) * bolt * 1.5;',
       // a fireball behind the deck: a patch of it goes orange and travels
       '  float fd = angTo(az, uFireAz) + abs(el - uFireEl) * 0.8;',
@@ -9356,15 +9477,14 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       '      * spread * (0.48 - layer * 0.10);',
       '  }',
       '  c += aurLight * uAurAmt * (0.20 + 0.80 * d);',
-      '  float a = clamp(thick * 0.94, 0.0, 1.0);',
-      // the lit parts stay visible even where the cloud is thin
-      '  a = clamp(a + (bolt + uFireAmt * (1.0 - smoothstep(0.05, 1.1, fd))) * 0.5 * uCover, 0.0, 1.0);',
+      '  float a = clamp(alpha * band, 0.0, 0.985);',
+      // Light changes existing cloud colour; it never fills clear gaps.
       '  gl_FragColor = vec4(c * uGain, a);',
       '}'
     ].join('\n')
   });
   var cloudDeck = new THREE.Mesh(
-    new THREE.SphereGeometry(600, 32, 16, 0, Math.PI * 2, 0, Math.PI * 0.52), cloudMat);
+    new THREE.SphereGeometry(600, 48, 24, 0, Math.PI * 2, 0, Math.PI * 0.52), cloudMat);
   cloudDeck.frustumCulled = false;
   cloudDeck.renderOrder = -3;          // after the aurora, before everything solid
   cloudDeck.visible = false;
@@ -15568,19 +15688,54 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
   // keeps it
   var INPUT = { steer: 0, throttle: 0, brake: 0, highBeam: false };
 
+  // Standard Xbox layout. Poll every frame, including the pause screen.
+  var controller = { index: null, steer: 0, gas: 0, brake: 0, armed: false, buttons: [] };
+  function controllerAxis(value, deadzone) {
+    value = Number.isFinite(value) ? clamp(value, -1, 1) : 0;
+    return Math.abs(value) <= deadzone ? 0 : Math.sign(value) * (Math.abs(value) - deadzone) / (1 - deadzone);
+  }
+  function pollController() {
+    var pads;
+    try { pads = navigator.getGamepads ? navigator.getGamepads() : []; } catch (_) { pads = []; }
+    var pad = controller.index === null ? null : pads[controller.index];
+    if (!pad || !pad.connected || pad.mapping !== 'standard') {
+      if (controller.index !== null && state === 'play') setPause(true);
+      controller.index = null; controller.armed = false; controller.buttons = [];
+      for (var i = 0; i < pads.length; i++) {
+        if (pads[i] && pads[i].connected && pads[i].mapping === 'standard') { pad = pads[i]; controller.index = pad.index; break; }
+      }
+    }
+    controller.steer = controller.gas = controller.brake = 0;
+    if (controller.index === null || document.hidden || !document.hasFocus()) { controller.armed = false; return; }
+    function button(n) { return pad.buttons[n] ? clamp(pad.buttons[n].value || 0, 0, 1) : 0; }
+    var steering = controllerAxis(pad.axes[0], 0.12);
+    var gas = Math.max(0, controllerAxis(button(7), 0.025));
+    var brake = Math.max(0, controllerAxis(button(6), 0.025));
+    var pressed = [button(9) > 0.5, button(3) > 0.5, button(2) > 0.5];
+    if (pressed[0] && !controller.buttons[0]) togglePause();
+    if (state === 'play' && !settingsOpen()) {
+      if (pressed[1] && !controller.buttons[1]) toggleBeam();
+      if (pressed[2] && !controller.buttons[2]) cycleRadio();
+      if (!gas && !brake && !steering) controller.armed = true;
+      if (controller.armed) { controller.steer = steering; controller.gas = gas; controller.brake = brake; }
+    } else controller.armed = false;
+    controller.buttons = pressed;
+  }
+
   function readInput() {
     var steer = 0, gas = 0, brake = 0;
     if (keys.KeyA || keys.ArrowLeft) steer -= 1;
     if (keys.KeyD || keys.ArrowRight) steer += 1;
     if (keys.KeyW || keys.ArrowUp) gas = 1;
     if (keys.KeyS || keys.ArrowDown || keys.Space) brake = 1;
-    steer += touchSteerValue();
-    gas = Math.max(gas, touchState.gas);
-    brake = Math.max(brake, touchState.brake);
+    steer += touchSteerValue() + controller.steer;
+    gas = Math.max(gas, touchState.gas, controller.gas);
+    brake = Math.max(brake, touchState.brake, controller.brake);
     if (settings.invertSteer) steer = -steer;
     INPUT.steer = clamp(steer, -1, 1);
     INPUT.throttle = clamp(gas, 0, 1);
     INPUT.brake = clamp(brake, 0, 1);
+    INPUT.analogReverse = controller.index !== null && controller.armed;
     INPUT.highBeam = highBeam;
     return INPUT;
   }
@@ -15594,6 +15749,7 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
 
   function padReset() { padId = null; padMouse = false; }
   function releaseControls() {
+    if (controller) { controller.armed = false; controller.steer = controller.gas = controller.brake = 0; }
     keys = {}; padReset(); lookInput = 0;
     touchState.gas = touchState.brake = touchState.steer = 0;
     document.querySelectorAll('.tbtn.down').forEach(function(el){el.classList.remove('down');});
@@ -17348,6 +17504,11 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     if (cloudDeck.visible) {
       cloudMat.uniforms.uTime.value = time;
       cloudMat.uniforms.uCover.value = wx.cover;
+      cloudMat.uniforms.uStorm.value = wx.storm || 0;
+      cloudMat.uniforms.uDetail.value = settings.quality + 2;
+      // Floating origin: offsets repeat only at the combined map/shape period.
+      // Carry the real road distance into the sky instead of attaching banks to the car.
+      cloudMat.uniforms.uTravel.value.set(sim.x / 18000, -(sim.dist % 900000) / 18000);
       cloudMat.uniforms.uGain.value = g0;
       cloudMat.uniforms.uFlash.value = wx.flash;
       // the bearing of whichever strike is currently lighting things up
@@ -18749,6 +18910,7 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
   var SIREN_AT = { dx: 0, dz: 0, dzdt: 0 };
 
   function frame(now) {
+    pollController();
     var dt = Math.min((now - last) / 1000, 0.05);
     last = now;
     timeAcc += dt;
