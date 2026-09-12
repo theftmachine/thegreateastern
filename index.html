@@ -867,7 +867,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  var VERSION = '3.111.4';
+  var VERSION = '3.112.2';
 
   /* --------------------------------------------------------------- constants */
   var C = {
@@ -7849,6 +7849,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     this.lfo.start(now);
 
     this.ready = true;
+    this.prepareKaiju();
     return true;
   };
 
@@ -7869,6 +7870,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 
   Audio.prototype.setVolume = function (v) {
     this.masterVolume = v;
+    this._kaijuVolume();
     if (this.master) this.master.gain.value = this.muted ? 0 : v;
     this._applyTrackGain();
   };
@@ -7994,6 +7996,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 
   Audio.prototype.setMuted = function (m) {
     this.muted = m;
+    this._kaijuVolume();
     if (this.master) this.master.gain.value = m ? 0 : this.masterVolume;
     this._applyTrackGain();
   };
@@ -8475,6 +8478,11 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 
   // pausing the game has to stop the tape as well as the synthesis
   Audio.prototype.setPaused = function (on) {
+    this.kaijuPaused=!!on;
+    if(this.kaijuRoar) {
+      if(on)this.kaijuRoar.pause();
+      else if(this.kaijuRoarActive){var rp=this.kaijuRoar.play();if(rp&&rp.catch)rp.catch(function(){});}
+    }
     if (this.ctx) {
       var pending = on ? this.ctx.suspend() : this.ctx.resume();
       if (pending && pending.catch) pending.catch(function () {});
@@ -8879,6 +8887,45 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
      four overlapping swells at irregular spacing, over brown noise, with the
      filter closing as it goes so the tail is all bottom end. A near one gets
      a hard leading edge; a distant one has no attack at all and just arrives. */
+  Audio.prototype._kaijuVolume = function () {
+    if(this.kaijuRoar)this.kaijuRoar.volume=this.muted?0:Math.max(0,Math.min(1,this.masterVolume*0.32));
+  };
+  Audio.prototype.prepareKaiju = function () {
+    if(!this.kaijuRoar && typeof window!=='undefined' && window.Audio) {
+      var self=this,el=new window.Audio();el.preload='auto';el.src='sfx/roar.mp3';
+      el.onended=el.onerror=function(){self.kaijuRoarActive=false;};
+      this.kaijuRoar=el;this._kaijuVolume();
+    }
+  };
+  Audio.prototype.roar = function () {
+    this.prepareKaiju();var el=this.kaijuRoar;if(!el)return;
+    el.pause();try{el.currentTime=0;}catch(e){}
+    this.kaijuRoarActive=true;this._kaijuVolume();
+    if(!this.kaijuPaused){var self=this,p=el.play();if(p&&p.catch)p.catch(function(){self.kaijuRoarActive=false;});}
+  };
+  Audio.prototype.stopKaiju = function () {
+    this.kaijuRoarActive=false;
+    if(this.kaijuRoar){this.kaijuRoar.pause();try{this.kaijuRoar.currentTime=0;}catch(e){}}
+    if(this.kaijuVoices){for(var i=0;i<this.kaijuVoices.length;i++){try{this.kaijuVoices[i].stop();}catch(e){}}this.kaijuVoices.length=0;}
+  };
+  Audio.prototype.kaijuStep = function (strength) {
+    if(!this.ready||this.kaijuPaused)return;
+    var ctx=this.ctx,t=ctx.currentTime,dur=1.8;
+    // One cached low-rate brown-noise roll; never build thunder PCM per step.
+    if(!this.kaijuStepBuffer){
+      var rate=12000,len=Math.floor(rate*dur),buf=ctx.createBuffer(1,len,rate),d=buf.getChannelData(0),last=0;
+      for(var i=0;i<len;i++){var u=i/rate;last=(last+0.02*(Math.random()*2-1))/1.02;
+        d[i]=last*10*(1-Math.exp(-u*30))*Math.exp(-u*3.2);}
+      this.kaijuStepBuffer=buf;this.kaijuVoices=[];
+    }
+    while(this.kaijuVoices.length>=3){try{this.kaijuVoices.shift().stop();}catch(e){}}
+    var src=ctx.createBufferSource(),lp=ctx.createBiquadFilter(),g=ctx.createGain();
+    src.buffer=this.kaijuStepBuffer;lp.type='lowpass';lp.frequency.value=150;lp.Q.value=0.5;
+    g.gain.value=0.14*Math.max(0,Math.min(1,strength));
+    src.connect(lp);lp.connect(g);g.connect(this.bus);releaseSound(src,[lp,g]);
+    this.kaijuVoices.push(src);src.start(t);src.stop(t+dur);
+  };
+
   Audio.prototype.thunder = function (near) {
     if (!this.ready) return;
     var ctx = this.ctx, t = ctx.currentTime;
@@ -12565,7 +12612,7 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     oval(head,-9,5,0,24,12,14);oval(head,-27,1,0,14,8,11);
     var jaw=new THREE.Group();jaw.position.set(-1,-4,0);head.add(jaw);
     oval(jaw,-20,-2,0,24,5,11);
-    var legs=[],shins=[],feet=[];
+    var legs=[],shins=[],feet=[],arms=[];
     for(var side=-1;side<=1;side+=2) {
       var leg=new THREE.Group();leg.position.set(8,78,side*20);root.add(leg);legs.push(leg);
       oval(leg,0,-25,0,25,30,20);
@@ -12573,9 +12620,10 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       oval(shin,0,-24,0,13,26,14);
       oval(foot,-12,-3,0,25,10,17);
       for(var toe=0;toe<3;toe++) oval(foot,-29,-5,(toe-1)*9,10,5,4);
-      oval(body,-37,153,side*22,7,16,6).rotation.z=-0.65;
-      oval(body,-46,145,side*24,14,5,5).rotation.z=0.20;
-      for(var f=0;f<3;f++) oval(body,-58-f*2,141,side*24+(f-1)*3,3,6,2);
+      var arm=new THREE.Group();arm.position.set(-37,158,side*22);body.add(arm);arms.push(arm);
+      oval(arm,0,-5,0,7,16,6).rotation.z=-0.65;
+      oval(arm,-9,-13,side*2,14,5,5).rotation.z=0.20;
+      for(var f=0;f<3;f++) oval(arm,-21-f*2,-17,side*2+(f-1)*3,3,6,2);
     }
     // A broad haunch overlaps the tail root, all in the torso's moving frame.
     oval(body,24,79,-3,32,29,26);
@@ -12632,15 +12680,44 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       joint.add(new THREE.Mesh(merged,dark));
     }
     batchJoint(body);batchJoint(head);batchJoint(jaw);batchJoint(legs[0]);batchJoint(legs[1]);
-    for(var q=0;q<2;q++){batchJoint(shins[q]);batchJoint(feet[q]);}
+    for(var q=0;q<2;q++){batchJoint(shins[q]);batchJoint(feet[q]);batchJoint(arms[q]);}
     sphere.dispose();
+    // Rotate the trunk around the pelvis, rather than around ground level.
+    var torso=new THREE.Group();torso.position.set(8,78,0);root.add(torso);
+    torso.add(body);body.position.set(-8,-78,0);
     root.visible=false;scene.add(root);
-    return {root:root,body:body,head:head,jaw:jaw,legs:legs,shins:shins,feet:feet,tail:tail,plates:plateMat,breath:breath,flame:flameMat};
+    return {root:root,body:body,torso:torso,arms:arms,head:head,jaw:jaw,legs:legs,shins:shins,feet:feet,tail:tail,plates:plateMat,breath:breath,flame:flameMat};
   }());
+  // Hand-authored timing from the supplied walk-cycle reference: load the
+  // planted leg, carry the pelvis over it, then recover before the next step.
+  var KAIJU_WEIGHT_KEYS=[-0.9,-2.4,-2.9,-1.8,-0.2,0.9,0.8,0.1,-0.9];
+  function kaijuWeightPose(phase) {
+    var p=(phase-Math.floor(phase))*8,i=Math.floor(p),u=p-i;
+    u=u*u*(3-2*u);
+    return KAIJU_WEIGHT_KEYS[i]+(KAIJU_WEIGHT_KEYS[i+1]-KAIJU_WEIGHT_KEYS[i])*u;
+  }
+  var kaijuFeedback={event:null,step:-1,fire:false,impact:-100,strength:0};
+  function kaijuFootFeedback(k,cycle,settle) {
+    var f=kaijuFeedback;
+    if(f.event!==k){audio.stopKaiju();f.event=k;f.step=-1;f.fire=false;f.impact=-100;}
+    if(!k.on || state==='title' || state==='over'){
+      if(f.step!==-1||f.fire)audio.stopKaiju();f.step=-1;f.fire=false;f.impact=-100;return;
+    }
+    if(state!=='play')return;
+    var step=Math.floor(cycle*2);
+    if(step!==f.step){
+      if(f.step>=0&&step>f.step&&settle>0.4){
+        f.strength=0.25+0.75*(1-Math.min(1,Math.abs(k.x)));
+        f.impact=k.t;audio.kaijuStep(f.strength);
+      }
+      f.step=step;
+    }
+    if(k.fire>0&&!f.fire){audio.roar();f.fire=true;}
+  }
   function placeKaiju(k,g0) {
     var r=kaijuRig;r.root.visible=k.on;
     skyMat.uniforms.uKaijuBack.value=0;
-    if(!k.on)return;
+    if(!k.on){kaijuFootFeedback(k,0,0);return;}
     // Horizon-relative placement keeps the distant visitor distant during a drive.
     var span=Math.max(1400,camera.aspect*1150)+800;
     r.root.position.set(sim.x+k.x*span,-18,-1600);
@@ -12650,28 +12727,32 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
     skyMat.uniforms.uKaijuBackDir.value.set(k.x*span+65,112,-1600).normalize();
     // Foot targets stay fixed in world space during the long support phase.
     // The shorter recovery lifts the toes and swings the leg forward.
-    var travelled=(1-k.x)*span,cycle=travelled/(100/0.66);
+    var travelled=(1-k.x)*span,cycle=travelled/(100/0.70);
     var walkTime=k.t<56?k.t:k.t>70?k.t-70:56;
     var moving=k.t<56||k.t>70;
     var settle=moving?Math.min(1,walkTime/3,(56-walkTime)/3):0;
     settle=Math.max(0,settle);settle=settle*settle*(3-2*settle);
-    var weight=Math.sin(cycle*Math.PI*2)*settle;
-    var land=(cycle*2)%1;
-    var compression=Math.exp(-land*14)*2.2*settle;
-    var hipY=78-compression+Math.sin(cycle*Math.PI*4)*0.8*settle;
-    r.body.position.set(0,hipY-78,weight*2.8);
-    r.body.rotation.z=Math.sin(cycle*Math.PI*2-0.6)*0.009*settle;
+    kaijuFootFeedback(k,cycle,settle);
+    var weight=Math.sin(cycle*Math.PI*2-0.35)*settle;
+    var hipY=78+kaijuWeightPose(cycle*2)*settle;
+    r.torso.position.set(8,hipY,weight*3.8);
+    r.torso.rotation.set(weight*0.016,Math.sin(cycle*Math.PI*2-0.65)*0.022*settle,
+      (0.025+kaijuWeightPose(cycle*2-0.13)*0.004)*settle);
     for(var n=0;n<2;n++) {
       var phase=(cycle+n*0.5)%1,fx,fy=10,pitch=0;
-      if(phase<0.66) {fx=-50+phase/0.66*100;}
+      if(phase<0.70) {fx=-50+phase/0.70*100;}
       else {
-        var swing=(phase-0.66)/0.34,sm=swing*swing*(3-2*swing);
-        fx=50-sm*100;fy+=Math.pow(Math.sin(swing*Math.PI),1.4)*14;
-        pitch=Math.sin(swing*Math.PI*2)*0.10;
+        var swing=(phase-0.70)/0.30;
+        // Match the support phase's velocity at both ends of the recovery.
+        // A low arc reads as a heavy foot rolling through, not a high march.
+        var tangent=100/0.70*0.30;
+        fx=50+tangent*swing+(-300-3*tangent)*swing*swing+(200+2*tangent)*swing*swing*swing;
+        fy+=Math.pow(Math.sin(swing*Math.PI),2)*8.5;
+        pitch=-Math.sin(swing*Math.PI)*0.12;
       }
       fx=fx*settle+(n===0?-17:12)*(1-settle);
       fy=10+(fy-10)*settle;
-      var hx=8,hz=(n===0?-20:20)+weight*2.8,dx=fx-hx,dy=fy-hipY;
+      var hx=8,hz=(n===0?-20:20)+weight*3.8,dx=fx-hx,dy=fy-hipY;
       var d=Math.sqrt(dx*dx+dy*dy),along=(2500-2304+d*d)/(2*d);
       var bend=Math.sqrt(Math.max(0,2500-along*along));
       var kneeX=hx+dx/d*along+dy/d*bend;
@@ -12682,11 +12763,14 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       r.shins[n].rotation.z=Math.atan2(fx-kneeX,kneeY-fy);
       r.feet[n].position.set(fx,fy,(n===0?-20:20));
       r.feet[n].rotation.z=pitch*settle;
+      // Restrained, delayed shoulder motion, opposite to the supporting leg.
+      r.arms[n].rotation.z=Math.sin(cycle*Math.PI*2+n*Math.PI-0.9)*0.075*settle;
+      r.arms[n].rotation.x=Math.sin(cycle*Math.PI*2+n*Math.PI-1.3)*0.025*settle;
     }
     // The tail base inherits hip compression and lean through its parent.
-    r.tail.rotation.y=Math.sin(cycle*Math.PI*2-1.1)*0.045*settle;
-    r.tail.rotation.z=Math.sin(cycle*Math.PI*2-1.5)*0.008*settle;
-    r.head.rotation.z=-k.charge*0.12-Math.sin(cycle*Math.PI*4-0.5)*0.008*settle;
+    r.tail.rotation.y=Math.sin(cycle*Math.PI*2-1.35)*0.060*settle;
+    r.tail.rotation.z=kaijuWeightPose(cycle*2-0.26)*0.003*settle;
+    r.head.rotation.z=-k.charge*0.12-(0.014+kaijuWeightPose(cycle*2-0.22)*0.003)*settle;
     r.jaw.rotation.z=k.charge*0.27;
     r.plates.color.setRGB(0.006+k.charge*0.32,0.003+k.charge*0.045,0.01+k.charge*0.46);
     r.breath.visible=k.fire>0;r.flame.uniforms.uTime.value=k.t;
@@ -17122,6 +17206,14 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
       (Math.random() - 0.5) * sh * 0.05
     );
 
+    // A tiny low-frequency tremor, independent of the collision shake.
+    var kt=sim.kaiju.t-kaijuFeedback.impact;
+    if(state==='play'&&sim.kaiju.on&&kaijuFeedback.event===sim.kaiju&&kt>=0&&kt<1.4){
+      var ke=Math.exp(-kt*4)*(1-Math.exp(-kt*35))*kaijuFeedback.strength;
+      camHolder.rotation.x+=Math.sin(kt*31)*ke*0.0040;
+      camHolder.rotation.z+=Math.sin(kt*23)*ke*0.0015;
+    }
+
     /* --- headlights ----------------------------------------------------- */
     var g0 = gain();
     /* Declared here because the beam cones use it, and they are built further
@@ -19117,6 +19209,7 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
   }
 
   function startRun() {
+    audio.stopKaiju();
     releaseControls();
     kmTagUntil = 0;
     $('kmTag').className = 'tag hidden';
