@@ -867,7 +867,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  var VERSION = '3.112.2';
+  var VERSION = '3.113.2';
 
   /* --------------------------------------------------------------- constants */
   var C = {
@@ -1938,6 +1938,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       key: key,
       name: townName(key),
       population: 90 + Math.floor(hash1(key, 411) * 520),
+      townIndex: zone.townIndex,
       start: zone.start,
       end: zone.end,
       length: len,
@@ -2385,6 +2386,8 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
     // when the hazard RNG is consumed at a different rate
     this.zoneRng = mulberry32((this.seed ^ 0x5bf03635) >>> 0);
     this.zones = [];
+    this._townCount = 0;
+    this._crossingCache = new Map();
     this.zoneEnd = 0;
     this.zoneLit = false;
     this.lampCursor = 0;
@@ -2520,7 +2523,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
         range = lit ? P.lit : P.dark;
       }
       var len = range[0] + this.zoneRng() * (range[1] - range[0]);
-      this.zones.push({ start: this.zoneEnd, end: this.zoneEnd + len, lit: lit });
+      this.zones.push({ start: this.zoneEnd, end: this.zoneEnd + len, lit: lit, townIndex: lit ? this._townCount++ : -1 });
       this.zoneEnd += len;
       this.zoneLit = lit;
     }
@@ -3486,12 +3489,31 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
   /* The next crossing worth putting a train on: active, far enough ahead that
      the lights can start before you reach it, and not so far that the event
      would arm and then sit doing nothing for a minute. */
+  // Resolve once against the same seeded town layout as the scenery. Keep
+  // only nearby results: revisiting a crossing regenerates the same position.
+  Simulation.prototype.crossingAtIndex = function (index) {
+    var saved=this._crossingCache.get(index);if(saved)return saved;
+    var x=crossingInfo(index),P=LAMP_PRESETS[this.lampSpacing];
+    var rng=mulberry32((this.seed ^ 0x5bf03635) >>> 0),end=0,lit=false,first=true;
+    while(end<x.s+160){
+      lit=first?true:!lit;var range=first?P.first:lit?P.lit:P.dark;first=false;
+      var start=end;end+=range[0]+rng()*(range[1]-range[0]);
+      if(lit&&x.s>start-160&&x.s<end+160){
+        x.s=x.s-(start-160)<end+160-x.s?start-160:end+160;
+        break;
+      }
+    }
+    this._crossingCache.set(index,x);
+    if(this._crossingCache.size>24)this._crossingCache.delete(this._crossingCache.keys().next().value);
+    return x;
+  };
+
   Simulation.prototype._trainCrossing = function () {
     if (this.train.on) return null;
     var lo = Math.floor(this.dist / CROSSING_SLOT);
-    for (var i = lo; i <= lo + 1; i++) {
+    for (var i = lo - 1; i <= lo + 1; i++) {
       if (i < 0) continue;
-      var x = crossingInfo(i);
+      var x = this.crossingAtIndex(i);
       if (!x.train && !this.forceTrain) continue;
       var ahead = x.s - this.dist;
       if (ahead < C.TRAIN_ARM_MIN + 60) continue;
@@ -3589,8 +3611,10 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       return;
     }
 
-    // clear: the lights go out, and a moment later so does the event
-    if (tr.t > 2.5 || this.dist > tr.s + 220) {
+    // Road traffic is released, but the train keeps travelling until its
+    // last wagon is beyond the camera's far plane, even when looking sideways.
+    tr.u += C.TRAIN_SPEED * dt;
+    if (tr.u - tr.len > 3800) {
       tr.on = false;
       tr.phase = 'none';
       tr.lights = false;
@@ -4467,10 +4491,10 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
   function setPieces() {
     return [
       {
-        name: 'kaiju', weight: 2, minDist: 1800, gap: 12000, offRoad: true,
+        name: 'kaiju', weight: 2, minDist: 1800, gap: 6000, offRoad: true,
         off: function (s) { return s.oddMode === 'off'; },
         busy: function (s) { return s.kaiju.on; },
-        rate: function (s) { return s.oddMode === 'often' ? C.OFTEN_RATE : s._eventChance(0.012); },
+        rate: function (s) { return s.oddMode === 'often' ? C.OFTEN_RATE : s._eventChance(0.20); },
         start: function (s) { s._startKaiju(); }
       },
       {
@@ -4561,7 +4585,7 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 
            Nothing can double up on it, because `off` above is false for as
            long as one is armed - `_trainCrossing` will not offer a second. */
-        busy: function (s) { return s.train.on && s.train.phase !== 'armed'; },
+        busy: function (s) { return s.train.on && s.train.phase !== 'armed' && s.train.phase !== 'clear'; },
         /* Not routed through _eventChance. The crossings do the rationing -
            there is one every forty kilometres or so and no more - so a preview
            multiplier on top of that would only make the same train arm a few
@@ -6025,6 +6049,13 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       out.push({ s: hAt, kind: 'fuel', value: 1, side: this.nearSide(), name: '', population: 0 });
     }
 
+    // Town service signs lead into the post-shop forecourt.
+    for(var ti=0;ti<this.zones.length;ti++){
+      var tf=this.townFuel(this.zones[ti]);if(!tf)continue;
+      var fuelSign=tf.s-220;
+      if(fuelSign>=this.dist-C.VIEW_BEHIND&&fuelSign<=this.dist+C.VIEW_AHEAD)
+        out.push({s:fuelSign,kind:'fuel',value:1,side:this.nearSide(),name:'',population:0});
+    }
     // rest area advance warning
     var rfirst = Math.floor((this.dist - REST_SIGN_AT) / REST_SLOT);
     for (var ri = rfirst; ri <= rfirst + 2; ri++) {
@@ -6241,6 +6272,8 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
           if (this._streetNear(hs, 9.0)) continue;
           for (var m = 0; m < 2; m++) {
             var hside = m ? 1 : -1;
+            var fuelPlot=this.townFuel(t);
+            if(fuelPlot&&fuelPlot.side===hside&&hs>fuelPlot.s-35&&hs<fuelPlot.s+ROADHOUSE_LENGTH+35)continue;
             var hkey = t.key + h * 17 + r * 211 + m * 4007;
             /* Which house it is. Five of them now rather than one.
 
@@ -6304,11 +6337,11 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
 
   Simulation.prototype.visibleCrossings = function () {
     var out = [];
-    var first = Math.floor((this.dist - C.VIEW_BEHIND) / CROSSING_SLOT);
-    var last = Math.ceil((this.dist + C.CROSSING_AHEAD) / CROSSING_SLOT);
+    var first = Math.floor((this.dist - C.VIEW_BEHIND) / CROSSING_SLOT) - 1;
+    var last = Math.ceil((this.dist + C.CROSSING_AHEAD) / CROSSING_SLOT) + 1;
     for (var i = first; i <= last; i++) {
       if (i < 0) continue;
-      var x = crossingInfo(i);
+      var x = this.crossingAtIndex(i);
       if (x.s < this.dist - C.VIEW_BEHIND || x.s > this.dist + C.CROSSING_AHEAD) continue;
       x.side = railSide(x.s);
       out.push(x);
@@ -6464,7 +6497,28 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
           (C.SHOULDER_HALF + 30 - C.WORLD_HALF) * clamp(g, 0, 1));
       }
     }
+    var townStation=this.townFuelAt(s,90);
+    if(townStation&&townStation.side===side){
+      var start=townStation.s-90,end=townStation.s+ROADHOUSE_LENGTH+60;
+      var apron=Math.min((s-start)/90,(end-s)/60,1);
+      if(apron>0)lim=Math.max(lim,C.WORLD_HALF+(C.SHOULDER_HALF+30-C.WORLD_HALF)*clamp(apron,0,1));
+    }
     return lim;
+  };
+
+  Simulation.prototype.townFuel = function (town) {
+    if(!Number.isInteger(town.townIndex)||town.townIndex%2!==1)return null;
+    var main=mainStreet({start:town.start,length:town.end-town.start});
+    return {index:-1-town.townIndex,town:true,s:main.end+22,side:this.nearSide(),
+      brand:town.townIndex%4,open:true};
+  };
+  Simulation.prototype.townFuelAt = function (s,margin) {
+    for(var i=0;i<this.zones.length;i++){
+      var z=this.zones[i];if(!z.lit||s<z.start||s>z.end)continue;
+      var r=this.townFuel(z);
+      if(r&&s>r.s-margin&&s<r.s+ROADHOUSE_LENGTH+margin)return r;
+    }
+    return null;
   };
 
   Simulation.prototype.visibleRoadhouses = function () {
@@ -6481,10 +6535,17 @@ const t="169",e={LEFT:0,MIDDLE:1,RIGHT:2,ROTATE:0,DOLLY:1,PAN:2},n={ROTATE:0,PAN
       r.away = r.s - this.dist;
       out.push(r);
     }
+    for(var j=0;j<this.zones.length;j++){
+      var townStation=this.townFuel(this.zones[j]);if(!townStation)continue;
+      if(townStation.s+ROADHOUSE_LENGTH<this.dist-C.VIEW_BEHIND||townStation.s>this.dist+C.ROADHOUSE_RANGE)continue;
+      townStation.away=townStation.s-this.dist;out.push(townStation);
+    }
+    out.sort(function(a,b){return Math.abs(a.s-this.dist)-Math.abs(b.s-this.dist);}.bind(this));
     return out;
   };
 
   Simulation.prototype.roadhouseAt = function (s) {
+    var townStation=this.townFuelAt(s,0);if(townStation)return townStation;
     var first = Math.floor((s - ROADHOUSE_LENGTH) / ROADHOUSE_SLOT);
     for (var i = first; i <= first + 2; i++) {
       if (i < 0) continue;
@@ -19579,7 +19640,7 @@ window.NDStart = function (THREE, ASSET, ARMSDATA, TRAFFICDATA, ROADSDATA) {
      Not a setting, because it is not a way to play - there is a crossing every
      thirteen kilometres and this makes all of them a stop. */
   var forcedTrain = /[?&]train\b/.test(window.location.search || '');
-  var forcedGodzilla = /[?&]godzilla(?:[=&]|$)/i.test(window.location.search || '');
+  var forcedGodzilla = /[?&]gsc(?:[=&]|$)/i.test(window.location.search || '');
 
   function runOptions() {
     var o = {
